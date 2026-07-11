@@ -654,10 +654,180 @@
     body.winddown-active {
       padding-top: 56px;
     }
+
+    /* ── Permission Onboarding ──────────────────────────────────────── */
+    #permission-onboarding {
+      display: none;
+      position: fixed;
+      inset: 0;
+      z-index: 99999;
+      background: rgba(8, 17, 31, 0.97);
+      backdrop-filter: blur(20px);
+      align-items: center;
+      justify-content: center;
+      flex-direction: column;
+      gap: 0;
+    }
+
+    #permission-onboarding.visible {
+      display: flex;
+    }
+
+    .onboarding-card {
+      background: rgba(255,255,255,0.04);
+      border: 1px solid rgba(255,255,255,0.1);
+      border-radius: 20px;
+      padding: 48px 52px;
+      max-width: 520px;
+      width: 90%;
+      text-align: center;
+    }
+
+    .onboarding-icon {
+      font-size: 3.5rem;
+      margin-bottom: 20px;
+    }
+
+    .onboarding-title {
+      font-size: 1.6rem;
+      font-weight: 700;
+      color: #fff;
+      margin-bottom: 12px;
+      letter-spacing: -0.02em;
+    }
+
+    .onboarding-subtitle {
+      font-size: 0.95rem;
+      color: rgba(255,255,255,0.55);
+      line-height: 1.65;
+      margin-bottom: 32px;
+    }
+
+    .onboarding-steps {
+      text-align: left;
+      background: rgba(255,255,255,0.04);
+      border-radius: 12px;
+      padding: 20px 24px;
+      margin-bottom: 28px;
+      display: flex;
+      flex-direction: column;
+      gap: 14px;
+    }
+
+    .onboarding-step {
+      display: flex;
+      align-items: flex-start;
+      gap: 14px;
+      font-size: 0.88rem;
+      color: rgba(255,255,255,0.75);
+      line-height: 1.5;
+    }
+
+    .onboarding-step-num {
+      background: rgba(99,179,237,0.2);
+      color: #63b3ed;
+      border-radius: 50%;
+      width: 24px;
+      height: 24px;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      font-size: 0.75rem;
+      font-weight: 700;
+      flex-shrink: 0;
+      margin-top: 1px;
+    }
+
+    .onboarding-btn-primary {
+      background: linear-gradient(135deg, #63b3ed, #4299e1);
+      color: #fff;
+      border: none;
+      border-radius: 12px;
+      padding: 14px 32px;
+      font-size: 0.95rem;
+      font-weight: 600;
+      cursor: pointer;
+      width: 100%;
+      margin-bottom: 12px;
+      transition: opacity 0.2s;
+    }
+
+    .onboarding-btn-primary:hover { opacity: 0.88; }
+
+    .onboarding-btn-skip {
+      background: transparent;
+      border: none;
+      color: rgba(255,255,255,0.35);
+      font-size: 0.82rem;
+      cursor: pointer;
+      padding: 8px;
+    }
+
+    .onboarding-btn-skip:hover { color: rgba(255,255,255,0.6); }
+
+    .onboarding-granted {
+      display: flex;
+      align-items: center;
+      gap: 10px;
+      justify-content: center;
+      color: #68d391;
+      font-size: 0.9rem;
+      font-weight: 600;
+      margin-bottom: 16px;
+    }
+
+    .onboarding-granted-icon {
+      width: 22px;
+      height: 22px;
+      background: #68d391;
+      border-radius: 50%;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      color: #1a202c;
+      font-size: 0.75rem;
+      font-weight: 800;
+    }
   </style>
 </head>
 <body>
   <!-- Wind-down warm colour overlay -->
+  
+  <!-- Permission Onboarding Overlay -->
+  <div id="permission-onboarding">
+    <div class="onboarding-card">
+      <div class="onboarding-icon">🌙</div>
+      <div class="onboarding-title">One quick setup step</div>
+      <div class="onboarding-subtitle">
+        LuxShift needs Accessibility permission to dim your display and activate Night Shift as your bedtime approaches. Without it, the core feature won't work.
+      </div>
+      <div class="onboarding-steps">
+        <div class="onboarding-step">
+          <div class="onboarding-step-num">1</div>
+          <div>Click <strong>"Open System Settings"</strong> below — it'll take you directly to the right page</div>
+        </div>
+        <div class="onboarding-step">
+          <div class="onboarding-step-num">2</div>
+          <div>Scroll to find <strong>LuxShift</strong> in the Accessibility list and toggle it <strong>on</strong></div>
+        </div>
+        <div class="onboarding-step">
+          <div class="onboarding-step-num">3</div>
+          <div>Come back here — LuxShift will detect the permission automatically</div>
+        </div>
+      </div>
+      <div id="onboarding-granted-msg" class="onboarding-granted" style="display:none">
+        <div class="onboarding-granted-icon">✓</div>
+        Permission granted — you're all set!
+      </div>
+      <button class="onboarding-btn-primary" id="onboarding-open-settings-btn" onclick="window.luxshiftAPI.requestAccessibility()">
+        Open System Settings
+      </button>
+      <button class="onboarding-btn-skip" onclick="document.getElementById('permission-onboarding').classList.remove('visible')">
+        Skip for now (display control won't work)
+      </button>
+    </div>
+  </div>
+
   <div id="luxshift-overlay"></div>
   <!-- Wind-down status bar -->
   <div id="winddown-bar">
