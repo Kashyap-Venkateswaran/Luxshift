@@ -38,7 +38,7 @@
       "!.github/**",
       "!.gitignore",
       "!README.md",
-      "assets/nightshift-control"   // ensure the native Night Shift helper is packaged
+      "assets/nightshift-control"
     ],
     "mac": {
       "category": "public.app-category.healthcare-fitness",
