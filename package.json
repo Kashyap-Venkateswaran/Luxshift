@@ -1,0 +1,24 @@
+{
+  "name": "luxshift",
+  "version": "1.0.0",
+  "description": "LuxShift desktop prototype",
+  "main": "main.js",
+  "scripts": {
+    "start": "electron ."
+  },
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/LuxshiftOfficial/Luxshift.git"
+  },
+  "devDependencies": {
+    "electron": "^42.4.1"
+  },
+  "dependencies": {
+    "brightness": "^2.2.0",
+    "electron-store": "^8.1.0",
+    "suncalc": "^1.9.0"
+  },
+  "allowScripts": {
+    "electron@37.10.3": true
+  }
+}
