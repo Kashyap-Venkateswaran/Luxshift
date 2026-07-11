@@ -87,5 +87,16 @@ contextBridge.exposeInMainWorld('luxshiftAPI', {
     }
   },
 
+  checkPermissions: () => ipcRenderer.invoke('luxshift:check-permissions'),
+  requestAccessibility: () => ipcRenderer.invoke('luxshift:request-accessibility'),
+  openAccessibilitySettings: () => ipcRenderer.invoke('luxshift:open-accessibility-settings'),
+  onPermissionStatus: (callback) => {
+    const listener = (_event, payload) => callback(payload);
+    ipcRenderer.on('luxshift:permission-status', listener);
+    return listener;
+  },
+  removePermissionListener: (listener) => {
+    if (listener) ipcRenderer.removeListener('luxshift:permission-status', listener);
+  },
   getSunData
 });

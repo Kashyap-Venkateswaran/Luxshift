@@ -7,7 +7,8 @@ const {
   Menu,
   nativeImage,
   dialog,
-  shell
+  shell,
+  systemPreferences
 } = require('electron');
 
 const path = require('path');
@@ -664,6 +665,63 @@ async function getEnvironment(coords) {
   }
 }
 
+// ── Permission helpers ────────────────────────────────────────────────────────
+
+function hasAccessibilityPermission() {
+  if (process.platform !== 'darwin') return true;
+  try {
+    return systemPreferences.isTrustedAccessibilityClient(false);
+  } catch (_) {
+    return false;
+  }
+}
+
+function requestAccessibilityPermission() {
+  if (process.platform !== 'darwin') return;
+  try {
+    // This triggers the macOS permission prompt
+    systemPreferences.isTrustedAccessibilityClient(true);
+  } catch (_) {}
+}
+
+async function showPermissionOnboarding(win) {
+  if (!win || win.isDestroyed()) return;
+
+  // Send onboarding state to renderer
+  win.webContents.send('luxshift:permission-status', {
+    accessibility: hasAccessibilityPermission()
+  });
+}
+
+async function openAccessibilitySettings() {
+  try {
+    await shell.openExternal('x-apple.systempreferences:com.apple.preference.security?Privacy_Accessibility');
+  } catch (_) {
+    await shell.openExternal('x-apple.systempreferences:com.apple.preference.security');
+  }
+}
+
+// Poll for permission grant after user opens System Settings
+let _permissionPollInterval = null;
+function startPermissionPolling(win) {
+  if (_permissionPollInterval) return;
+  _permissionPollInterval = setInterval(() => {
+    if (!win || win.isDestroyed()) {
+      clearInterval(_permissionPollInterval);
+      _permissionPollInterval = null;
+      return;
+    }
+    const hasPermission = hasAccessibilityPermission();
+    win.webContents.send('luxshift:permission-status', {
+      accessibility: hasPermission
+    });
+    if (hasPermission) {
+      clearInterval(_permissionPollInterval);
+      _permissionPollInterval = null;
+    }
+  }, 2000);
+}
+
 app.whenReady().then(async () => {
   app.setName('LuxShift');
 
@@ -767,5 +825,28 @@ ipcMain.handle('luxshift:get-winddown-state', async () => {
 
 ipcMain.handle('luxshift:check-for-updates', async () => {
   await checkForUpdates(true);
+  return { ok: true };
+});
+
+// ── Permission IPC ────────────────────────────────────────────────────────────
+
+ipcMain.handle('luxshift:check-permissions', async () => {
+  return { accessibility: hasAccessibilityPermission() };
+});
+
+ipcMain.handle('luxshift:request-accessibility', async () => {
+  requestAccessibilityPermission();
+  const win = mainWindow;
+  if (win && !win.isDestroyed()) {
+    startPermissionPolling(win);
+    await openAccessibilitySettings();
+  }
+  return { ok: true };
+});
+
+ipcMain.handle('luxshift:open-accessibility-settings', async () => {
+  await openAccessibilitySettings();
+  const win = mainWindow;
+  if (win && !win.isDestroyed()) startPermissionPolling(win);
   return { ok: true };
 });

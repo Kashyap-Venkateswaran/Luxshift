@@ -196,6 +196,27 @@ async function bootstrap() {
   await fetchInitialWindDownState();
   await restoreActiveScheduleIfAvailable();
   startEnvironmentLoad();
+  await checkPermissionsOnStartup();
+}
+
+async function checkPermissionsOnStartup() {
+  if (!window.luxshiftAPI?.checkPermissions) return;
+  try {
+    const { accessibility } = await window.luxshiftAPI.checkPermissions();
+    if (!accessibility) {
+      showPermissionOnboarding();
+    }
+  } catch (_) {}
+}
+
+function showPermissionOnboarding() {
+  const overlay = document.getElementById('permission-onboarding');
+  if (overlay) overlay.classList.add('visible');
+}
+
+function hidePermissionOnboarding() {
+  const overlay = document.getElementById('permission-onboarding');
+  if (overlay) overlay.classList.remove('visible');
 }
 
 function bindRealtimeListeners() {
@@ -214,6 +235,19 @@ function bindRealtimeListeners() {
         }).catch(() => {});
       }
       showSunlightBanner(payload);
+    });
+  }
+
+  if (window.luxshiftAPI?.onPermissionStatus) {
+    window.luxshiftAPI.onPermissionStatus((payload) => {
+      if (payload?.accessibility) {
+        // Show granted message then auto-close onboarding after 2 seconds
+        const grantedMsg = document.getElementById('onboarding-granted-msg');
+        const openBtn = document.getElementById('onboarding-open-settings-btn');
+        if (grantedMsg) grantedMsg.style.display = 'flex';
+        if (openBtn) openBtn.style.display = 'none';
+        setTimeout(() => hidePermissionOnboarding(), 2000);
+      }
     });
   }
 

@@ -20,7 +20,19 @@ const path = require('path');
 const os = require('os');
 const execFileAsync = promisify(execFile);
 
-const NIGHTSHIFT_BIN = path.join(os.homedir(), 'nightshift-control');
+// Use bundled binary in production (inside app bundle),
+// fall back to home directory for local dev
+function getNightshiftBin() {
+  // In a packaged Electron app, __dirname points inside the .app bundle
+  const bundled = path.join(process.resourcesPath || __dirname, 'assets', 'nightshift-control');
+  const dev = path.join(__dirname, 'assets', 'nightshift-control');
+  const home = path.join(os.homedir(), 'nightshift-control');
+  const fs = require('fs');
+  if (fs.existsSync(bundled)) return bundled;
+  if (fs.existsSync(dev)) return dev;
+  return home;
+}
+const NIGHTSHIFT_BIN = getNightshiftBin();
 const MIN_BRIGHTNESS = 0.35;
 
 // Biological wind-down window — 90 minutes matches research on melatonin onset
