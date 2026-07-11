@@ -1,0 +1,807 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta
+    http-equiv="Content-Security-Policy"
+    content="default-src 'self'; style-src 'self' 'unsafe-inline'; script-src 'self'; img-src 'self' data:;"
+  />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>LuxShift</title>
+  <style>
+    :root {
+      --bg: #06101c;
+      --bg-2: #08131f;
+      --panel: linear-gradient(180deg, rgba(16, 25, 41, 0.94), rgba(7, 13, 24, 0.96));
+      --panel-border: rgba(156, 181, 220, 0.10);
+      --panel-soft: rgba(9, 15, 26, 0.78);
+      --text: #f0f4fb;
+      --muted: #a1afc6;
+      --faint: #6f7f98;
+      --accent: #9fb9e8;
+      --accent-2: #d3b489;
+      --shadow: 0 24px 60px rgba(0, 0, 0, 0.30);
+      --radius-lg: 24px;
+      --radius-md: 16px;
+      --radius-sm: 12px;
+      box-sizing: border-box;
+    }
+
+    *, *::before, *::after {
+      box-sizing: inherit;
+    }
+
+    html,
+    body {
+      margin: 0;
+      min-height: 100%;
+      background:
+        radial-gradient(circle at top left, rgba(185, 146, 94, 0.10), transparent 30%),
+        radial-gradient(circle at top right, rgba(120, 148, 195, 0.10), transparent 28%),
+        linear-gradient(180deg, #06101c 0%, #03070d 100%);
+      color: var(--text);
+      font-family: Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+    }
+
+    body {
+      padding: 20px;
+    }
+
+    .app-shell {
+      display: grid;
+      grid-template-columns: 320px minmax(0, 1fr);
+      gap: 20px;
+      min-height: calc(100vh - 40px);
+    }
+
+    .panel {
+      background: var(--panel);
+      border: 1px solid var(--panel-border);
+      border-radius: var(--radius-lg);
+      box-shadow: var(--shadow);
+      backdrop-filter: blur(14px);
+      transition: background 220ms ease, border-color 220ms ease, box-shadow 220ms ease;
+    }
+
+    body.winddown-active .panel {
+      background: color-mix(in oklab, var(--panel) 84%, #cfad7b 16%);
+      border-color: rgba(199, 172, 132, 0.16);
+    }
+
+    .sidebar {
+      padding: 18px;
+      display: flex;
+      flex-direction: column;
+      gap: 16px;
+    }
+
+    .brand {
+      padding: 18px;
+      border-radius: 18px;
+      background: linear-gradient(180deg, rgba(14, 24, 45, 0.9), rgba(6, 14, 28, 0.86));
+      border: 1px solid rgba(125, 177, 255, 0.08);
+    }
+
+    .brand h1 {
+      margin: 0 0 10px;
+      font-size: 2rem;
+      line-height: 1;
+      letter-spacing: -0.04em;
+    }
+
+    .brand p {
+      margin: 0;
+      color: var(--muted);
+      line-height: 1.55;
+      font-size: 0.95rem;
+    }
+
+    .settings-card {
+      padding: 18px;
+      border-radius: 18px;
+      background: rgba(5, 13, 26, 0.48);
+      border: 1px solid rgba(125, 177, 255, 0.08);
+    }
+
+    .settings-header {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      margin-bottom: 14px;
+    }
+
+    .settings-header h2 {
+      margin: 0;
+      font-size: 1rem;
+    }
+
+    .settings-panel {
+      display: grid;
+      gap: 12px;
+    }
+
+    .settings-panel label,
+    .input-stack label {
+      display: grid;
+      gap: 8px;
+      color: var(--muted);
+      font-size: 0.92rem;
+    }
+
+    .settings-panel input,
+    .settings-panel select,
+    textarea {
+      width: 100%;
+      border: 1px solid rgba(125, 177, 255, 0.12);
+      background: rgba(1, 8, 18, 0.86);
+      color: var(--text);
+      border-radius: 12px;
+      padding: 12px 14px;
+      font-size: 0.96rem;
+      outline: none;
+    }
+
+    .settings-panel input:focus,
+    .settings-panel select:focus,
+    textarea:focus {
+      border-color: rgba(121, 168, 255, 0.5);
+      box-shadow: 0 0 0 3px rgba(121, 168, 255, 0.12);
+    }
+
+    .button-row {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 10px;
+    }
+
+    button {
+      border: 0;
+      border-radius: 12px;
+      padding: 11px 14px;
+      font-size: 0.95rem;
+      font-weight: 600;
+      color: var(--text);
+      cursor: pointer;
+      background: rgba(255, 255, 255, 0.08);
+      transition: transform 140ms ease, background 140ms ease, opacity 140ms ease;
+    }
+
+    button:hover {
+      transform: translateY(-1px);
+      background: rgba(255, 255, 255, 0.12);
+    }
+
+    .primary-btn {
+      background: linear-gradient(180deg, #4b7fe9, #355fb4);
+    }
+
+    .secondary-btn {
+      background: rgba(121, 168, 255, 0.12);
+      border: 1px solid rgba(121, 168, 255, 0.18);
+    }
+
+    .settings-hint,
+    .field-helper,
+    .classic-support-copy {
+      margin: 0;
+      color: var(--muted);
+      line-height: 1.55;
+      font-size: 0.9rem;
+    }
+
+    .field-helper {
+      font-size: 0.84rem;
+      color: var(--faint);
+    }
+
+    .settings-summary {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 8px;
+      margin-top: 8px;
+    }
+
+    .settings-summary span {
+      padding: 8px 10px;
+      border-radius: 999px;
+      background: rgba(94, 199, 163, 0.12);
+      border: 1px solid rgba(94, 199, 163, 0.18);
+      color: #d3fff1;
+      font-size: 0.84rem;
+    }
+
+    .location-results {
+      display: grid;
+      gap: 8px;
+    }
+
+    .location-option {
+      text-align: left;
+      background: rgba(255, 255, 255, 0.05);
+      border: 1px solid rgba(121, 168, 255, 0.1);
+      padding: 12px;
+    }
+
+    .location-option span {
+      display: block;
+      font-weight: 600;
+      margin-bottom: 4px;
+    }
+
+    .location-option small {
+      color: var(--muted);
+    }
+
+    .main {
+      display: grid;
+      grid-template-rows: auto auto 1fr;
+      gap: 20px;
+    }
+
+    .top-grid {
+      display: grid;
+      grid-template-columns: minmax(0, 1fr) minmax(320px, 0.9fr);
+      gap: 20px;
+    }
+
+    .status-card,
+    .env-card,
+    .input-card,
+    .preview-card {
+      padding: 20px;
+    }
+
+    .eyebrow {
+      margin: 0 0 8px;
+      color: var(--faint);
+      text-transform: uppercase;
+      letter-spacing: 0.12em;
+      font-size: 0.74rem;
+      font-weight: 700;
+    }
+
+    .status-value,
+    .env-value {
+      margin: 0;
+      color: var(--text);
+      line-height: 1.7;
+      font-size: 1rem;
+    }
+
+    .env-hint {
+      margin: 12px 0 0;
+      color: var(--muted);
+      font-size: 0.92rem;
+    }
+
+    .card-header {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 16px;
+      margin-bottom: 12px;
+    }
+
+    .card-header h2 {
+      margin: 0;
+      font-size: 1rem;
+      font-weight: 700;
+      letter-spacing: -0.01em;
+    }
+
+    .input-card-classic {
+      padding: 18px 20px 16px;
+    }
+
+    .button-row-classic {
+      gap: 8px;
+    }
+
+    .button-row-classic button {
+      padding: 10px 12px;
+      border-radius: 10px;
+      font-size: 0.9rem;
+    }
+
+    .input-stack {
+      display: grid;
+      gap: 14px;
+    }
+
+    .schedule-textarea {
+      width: 100%;
+      min-height: 112px;
+      resize: vertical;
+      border-radius: 14px;
+      border: 1px solid rgba(121, 168, 255, 0.08);
+      background: linear-gradient(180deg, rgba(3, 10, 20, 0.94), rgba(2, 8, 18, 0.98));
+      color: var(--text);
+      padding: 16px 16px 14px;
+      font-size: 0.97rem;
+      line-height: 1.6;
+      box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.02);
+    }
+
+    .schedule-textarea::placeholder {
+      color: #6f84a8;
+    }
+
+    .schedule-textarea:focus {
+      outline: none;
+      border-color: rgba(121, 168, 255, 0.22);
+      box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.02), 0 0 0 3px rgba(121, 168, 255, 0.08);
+    }
+
+    .schedule-textarea.late-changes {
+      min-height: 86px;
+    }
+
+    .preview-shell {
+      min-height: 360px;
+      border-radius: 20px;
+      border: 1px solid rgba(121, 168, 255, 0.08);
+      background:
+        linear-gradient(180deg, rgba(4, 11, 22, 0.9), rgba(2, 8, 18, 0.95)),
+        radial-gradient(circle at top right, rgba(74, 111, 201, 0.12), transparent 28%);
+      padding: 18px;
+      overflow: auto;
+    }
+
+    .timeline-empty,
+    .timeline-loading {
+      min-height: 300px;
+      display: grid;
+      place-items: center;
+      text-align: center;
+      gap: 10px;
+      color: var(--muted);
+      padding: 24px;
+    }
+
+    .timeline-empty strong {
+      color: var(--text);
+      font-size: 1.04rem;
+    }
+
+    .timeline-empty p {
+      max-width: 560px;
+      margin: 0;
+      line-height: 1.65;
+    }
+
+    .timeline-empty-icon {
+      width: 52px;
+      height: 52px;
+      display: grid;
+      place-items: center;
+      border-radius: 50%;
+      background: rgba(121, 168, 255, 0.1);
+      border: 1px solid rgba(121, 168, 255, 0.14);
+      color: #d6e6ff;
+      font-size: 1.4rem;
+    }
+
+    .timeline-loading-line {
+      width: min(640px, 100%);
+      height: 18px;
+      border-radius: 999px;
+      background: linear-gradient(90deg, rgba(121, 168, 255, 0.08), rgba(121, 168, 255, 0.18), rgba(121, 168, 255, 0.08));
+      background-size: 200% 100%;
+      animation: shimmer 1.4s infinite linear;
+    }
+
+    .timeline-loading-line.short {
+      width: min(360px, 70%);
+    }
+
+    @keyframes shimmer {
+      0% { background-position: 200% 0; }
+      100% { background-position: -200% 0; }
+    }
+
+    .timeline-shell {
+      display: grid;
+      gap: 16px;
+    }
+
+    .timeline-header,
+    .timeline-card-top,
+    .timeline-meta {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 12px;
+    }
+
+    .timeline-kicker {
+      margin: 0 0 6px;
+      text-transform: uppercase;
+      letter-spacing: 0.16em;
+      color: var(--accent-2);
+      font-size: 0.72rem;
+      font-weight: 700;
+    }
+
+    .timeline-header h3 {
+      margin: 0;
+      font-size: 1.36rem;
+      line-height: 1.2;
+      letter-spacing: -0.02em;
+    }
+
+    .timeline-pill {
+      padding: 8px 12px;
+      border-radius: 999px;
+      background: rgba(255, 255, 255, 0.06);
+      border: 1px solid rgba(255, 255, 255, 0.08);
+      color: var(--text);
+      font-size: 0.84rem;
+      font-weight: 700;
+      white-space: nowrap;
+    }
+
+    .timeline-overview {
+      display: grid;
+      grid-template-columns: repeat(4, minmax(0, 1fr));
+      gap: 12px;
+    }
+
+    .timeline-overview-card {
+      padding: 12px 14px;
+      border-radius: 14px;
+      background: rgba(255, 255, 255, 0.04);
+      border: 1px solid rgba(121, 168, 255, 0.08);
+    }
+
+    .timeline-overview-label {
+      display: block;
+      margin-bottom: 6px;
+      color: var(--faint);
+      font-size: 0.73rem;
+      letter-spacing: 0.12em;
+      text-transform: uppercase;
+    }
+
+    .timeline-overview-card strong {
+      font-size: 1rem;
+      letter-spacing: -0.01em;
+    }
+
+    .timeline-anchor {
+      display: inline-flex;
+      align-items: center;
+      gap: 10px;
+      padding: 10px 12px;
+      border-radius: 999px;
+      background: rgba(94, 199, 163, 0.08);
+      border: 1px solid rgba(94, 199, 163, 0.16);
+      color: #d8fff3;
+      font-size: 0.9rem;
+      width: fit-content;
+      max-width: 100%;
+    }
+
+    .timeline-anchor-dot {
+      width: 9px;
+      height: 9px;
+      border-radius: 50%;
+      background: #8ef0d1;
+      box-shadow: 0 0 0 6px rgba(142, 240, 209, 0.08);
+      flex: 0 0 auto;
+    }
+
+    .timeline-list {
+      display: grid;
+      gap: 12px;
+    }
+
+    .timeline-item {
+      display: grid;
+      grid-template-columns: 18px minmax(0, 1fr);
+      gap: 12px;
+      align-items: stretch;
+    }
+
+    .timeline-rail {
+      display: grid;
+      grid-template-rows: 18px 1fr;
+      justify-items: center;
+    }
+
+    .timeline-node {
+      width: 10px;
+      height: 10px;
+      border-radius: 50%;
+      margin-top: 4px;
+      background: #d9e6ff;
+      box-shadow: 0 0 0 4px rgba(217, 230, 255, 0.08);
+    }
+
+    .timeline-line {
+      width: 2px;
+      background: linear-gradient(180deg, rgba(121, 168, 255, 0.5), rgba(121, 168, 255, 0.08));
+      border-radius: 999px;
+      margin-top: 6px;
+      min-height: 100%;
+    }
+
+    .timeline-card {
+      background: linear-gradient(180deg, rgba(5, 13, 26, 0.72), rgba(3, 10, 20, 0.84));
+      border: 1px solid rgba(121, 168, 255, 0.08);
+      border-radius: 18px;
+      padding: 14px 16px;
+    }
+
+    .timeline-time {
+      color: #dfeaff;
+      font-size: 0.92rem;
+      font-weight: 700;
+      letter-spacing: -0.01em;
+    }
+
+    .timeline-badges {
+      display: flex;
+      gap: 8px;
+      flex-wrap: wrap;
+      justify-content: flex-end;
+    }
+
+    .timeline-type-badge {
+      padding: 7px 10px;
+      border-radius: 999px;
+      background: rgba(121, 168, 255, 0.11);
+      border: 1px solid rgba(121, 168, 255, 0.15);
+      color: #dce8ff;
+      font-size: 0.78rem;
+      font-weight: 700;
+    }
+
+    .timeline-card h4 {
+      margin: 10px 0 8px;
+      font-size: 1.05rem;
+      letter-spacing: -0.01em;
+    }
+
+    .timeline-card p {
+      margin: 0;
+      color: var(--muted);
+      line-height: 1.58;
+      font-size: 0.94rem;
+    }
+
+    .timeline-notes {
+      border-top: 1px solid rgba(121, 168, 255, 0.08);
+      padding-top: 12px;
+    }
+
+    .timeline-notes-title {
+      margin: 0 0 8px;
+      font-weight: 700;
+      color: var(--text);
+    }
+
+    .timeline-notes ul {
+      margin: 0;
+      padding-left: 18px;
+      color: var(--muted);
+      display: grid;
+      gap: 8px;
+    }
+
+    .tone-work .timeline-node { background: #bdd0ff; }
+    .tone-unwind .timeline-node { background: #8ef0d1; }
+    .tone-sleep .timeline-node { background: #c2b2ff; }
+    .tone-wake .timeline-node { background: #ffd98e; }
+    .tone-break .timeline-node { background: #a9f1ff; }
+    .tone-leisure .timeline-node { background: #ffb8d9; }
+    .tone-general .timeline-node { background: #d9e6ff; }
+
+    @media (max-width: 1120px) {
+      .app-shell,
+      .top-grid,
+      .timeline-overview {
+        grid-template-columns: 1fr;
+      }
+    }
+
+    /* ── Wind-down warm overlay ─────────────────────────────────── */
+    #luxshift-overlay {
+      position: fixed;
+      inset: 0;
+      pointer-events: none;
+      z-index: 9999;
+      background: transparent;
+      transition: background 4s ease, opacity 4s ease;
+    }
+
+    /* Wind-down status bar at the top */
+    #winddown-bar {
+      position: fixed;
+      top: 0;
+      left: 0;
+      right: 0;
+      height: 36px;
+      z-index: 10000;
+      display: none;
+      align-items: center;
+      justify-content: center;
+      gap: 10px;
+      font-size: 0.82rem;
+      font-weight: 600;
+      letter-spacing: 0.04em;
+      background: rgba(255, 140, 40, 0.12);
+      border-bottom: 1px solid rgba(255, 160, 60, 0.22);
+      color: #ffd9a0;
+      backdrop-filter: blur(8px);
+      padding: 0 20px;
+    }
+
+    #winddown-bar.visible {
+      display: flex;
+    }
+
+    .winddown-dot {
+      width: 7px;
+      height: 7px;
+      border-radius: 50%;
+      background: #ffb347;
+      box-shadow: 0 0 0 4px rgba(255, 179, 71, 0.2);
+      animation: winddown-pulse 2s ease-in-out infinite;
+    }
+
+    @keyframes winddown-pulse {
+      0%, 100% { opacity: 1; transform: scale(1); }
+      50% { opacity: 0.5; transform: scale(0.8); }
+    }
+
+    /* Push body down when bar is visible */
+    body.winddown-active {
+      padding-top: 56px;
+    }
+  </style>
+</head>
+<body>
+  <!-- Wind-down warm colour overlay -->
+  <div id="luxshift-overlay"></div>
+  <!-- Wind-down status bar -->
+  <div id="winddown-bar">
+    <span class="winddown-dot"></span>
+    <span id="winddown-label">Wind-down active</span>
+  </div>
+
+  <div class="app-shell">
+    <aside class="panel sidebar">
+      <div class="brand">
+        <h1>LuxShift</h1>
+        <p>Build a calmer night workflow, reduce eye strain, and keep your sleep schedule from drifting after late work.</p>
+      </div>
+
+      <section class="settings-card">
+        <div class="settings-header">
+          <h2>Routine Settings</h2>
+        </div>
+
+        <div id="settingsPanel" class="settings-panel open">
+          <label>
+            Bedtime target
+            <input id="bedtimeInput" type="time" />
+          </label>
+
+          <label>
+            Wake target
+            <input id="wakeInput" type="time" />
+          </label>
+
+          <label>
+            Wind-down lead time
+            <select id="windDownInput">
+              <option value="15">15 minutes</option>
+              <option value="30">30 minutes</option>
+              <option value="45">45 minutes</option>
+              <option value="60">60 minutes</option>
+              <option value="90">90 minutes</option>
+            </select>
+          </label>
+
+          <label>
+            Time display
+            <select id="timeFormatInput">
+              <option value="12h">12-hour clock</option>
+              <option value="24h">24-hour clock</option>
+            </select>
+          </label>
+
+          <label>
+            Manual location
+            <input id="locationSearchInput" type="text" placeholder="Search for a city" />
+          </label>
+
+          <div class="button-row">
+            <button id="saveSettingsBtn" class="primary-btn" type="button">Save Settings</button>
+            <button id="searchLocationBtn" class="secondary-btn" type="button">Search Location</button>
+            <button id="useDeviceLocationBtn" class="secondary-btn" type="button">Use Device Location</button>
+          </div>
+
+          <p id="settingsHint" class="settings-hint">
+            Saved settings let LuxShift interpret your schedule relative to your usual routine.
+          </p>
+
+          <p class="field-helper">
+            Search for a city to use as a manual fallback when device location is unavailable.
+          </p>
+
+          <div id="locationResults" class="location-results"></div>
+          <div id="settingsSummary" class="settings-summary"></div>
+        </div>
+      </section>
+    </aside>
+
+    <main class="main">
+      <section class="top-grid">
+        <div class="panel status-card">
+          <p class="eyebrow">Current Mode</p>
+          <p id="modeValue" class="status-value">Idle</p>
+        </div>
+
+        <div class="panel env-card">
+          <p class="eyebrow">Environment</p>
+          <p id="envValue" class="env-value">Preparing environment lookup…</p>
+          <p id="envHint" class="env-hint">The app remains usable even if location is slow.</p>
+          <div class="button-row" style="margin-top: 12px">
+            <button id="retryEnvBtn" class="secondary-btn" type="button">Retry Environment</button>
+          </div>
+        </div>
+      </section>
+
+      <section class="panel input-card input-card-classic">
+        <div class="card-header">
+          <h2>Schedule Input</h2>
+          <div class="button-row button-row-classic">
+            <button id="parseBtn" class="primary-btn" type="button">Parse My Day</button>
+            <button id="fillBtn" class="secondary-btn" type="button">Insert Example</button>
+            <button id="clearBtn" class="secondary-btn" type="button">Clear</button>
+          </div>
+        </div>
+
+        <div class="input-stack">
+          <label>
+            Tonight’s Plan
+            <textarea
+              id="input"
+              class="schedule-textarea"
+              placeholder="Describe tonight’s schedule, work blocks, calls, meals, downtime, and your intended sleep or wake times."
+            ></textarea>
+          </label>
+
+          <label>
+            Late Changes
+            <textarea
+              id="lateChangesInput"
+              class="schedule-textarea late-changes"
+              placeholder="Add last-minute updates here, like delays, rescheduled calls, or a later bedtime."
+            ></textarea>
+          </label>
+
+          <p class="classic-support-copy">Electron shell running locally on your Mac.</p>
+        </div>
+      </section>
+
+      <section class="panel preview-card">
+        <div class="card-header">
+          <h2>Schedule Preview</h2>
+        </div>
+
+        <div id="preview" class="preview-shell">
+          <div class="timeline-empty">
+            <div class="timeline-empty-icon">!</div>
+            <strong>Your night timeline will appear here.</strong>
+            <p>Add your plan for tonight and LuxShift will turn it into a visual sequence of blocks.</p>
+          </div>
+        </div>
+      </section>
+    </main>
+  </div>
+
+  <script src="./renderer.js"></script>
+</body>
+</html>
