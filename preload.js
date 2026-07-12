@@ -88,6 +88,7 @@ contextBridge.exposeInMainWorld('luxshiftAPI', {
   },
 
   checkPermissions: () => ipcRenderer.invoke('luxshift:check-permissions'),
+  requestNotifications: () => ipcRenderer.invoke('luxshift:request-notifications'),
   requestAccessibility: () => ipcRenderer.invoke('luxshift:request-accessibility'),
   openAccessibilitySettings: () => ipcRenderer.invoke('luxshift:open-accessibility-settings'),
   onPermissionStatus: (callback) => {

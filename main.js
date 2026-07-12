@@ -236,10 +236,14 @@ function requestAccessibilityPermission() {
   } catch (_) {}
 }
 async function openAccessibilitySettings() {
-  try {
-    await shell.openExternal('x-apple.systempreferences:com.apple.preference.security?Privacy_Accessibility');
-  } catch (_) {
-    await shell.openExternal('x-apple.systempreferences:com.apple.preference.security');
+  // Try multiple URL schemes to support macOS 12 through 15+
+  const urls = [
+    'x-apple.systempreferences:com.apple.preference.security?Privacy_Accessibility',
+    'x-apple.systempreferences:com.apple.Privacy-Accessibility',
+    'x-apple.systempreferences:com.apple.preference.security'
+  ];
+  for (const url of urls) {
+    try { await shell.openExternal(url); return; } catch (_) {}
   }
 }
 let _permissionPollInterval = null;
@@ -427,6 +431,24 @@ ipcMain.handle('luxshift:notify', async (_event, payload) => {
 });
 
 // Update checks (unchanged)
+ipcMain.handle('luxshift:request-notifications', async () => {
+  try {
+    if (Notification.isSupported()) {
+      const n = new Notification({
+        title: 'LuxShift',
+        body: 'Notifications enabled — you will receive sunlight nudges and bedtime reminders.',
+        silent: true
+      });
+      n.show();
+      setTimeout(() => { try { n.close(); } catch (_) {} }, 3000);
+      return { ok: true };
+    }
+    return { ok: false };
+  } catch (err) {
+    return { ok: false, error: err.message };
+  }
+});
+
 ipcMain.handle('luxshift:check-for-updates', async () => {
   await checkForUpdates(true);
   return { ok: true };

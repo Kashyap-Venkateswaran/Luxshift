@@ -205,8 +205,15 @@ async function checkPermissionsOnStartup() {
     const { accessibility } = await window.luxshiftAPI.checkPermissions();
     if (!accessibility) {
       showPermissionOnboarding();
+    } else {
+      await requestNotificationPermissionSilently();
     }
   } catch (_) {}
+}
+
+async function requestNotificationPermissionSilently() {
+  if (!window.luxshiftAPI?.requestNotifications) return;
+  try { await window.luxshiftAPI.requestNotifications(); } catch (_) {}
 }
 
 function showPermissionOnboarding() {
@@ -246,6 +253,7 @@ function bindRealtimeListeners() {
         const openBtn = document.getElementById('onboarding-open-settings-btn');
         if (grantedMsg) grantedMsg.style.display = 'flex';
         if (openBtn) openBtn.style.display = 'none';
+        requestNotificationPermissionSilently();
         setTimeout(() => hidePermissionOnboarding(), 2000);
       }
     });
