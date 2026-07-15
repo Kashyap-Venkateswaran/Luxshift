@@ -4,7 +4,7 @@ const cors = require('cors');
 const app = express();
 
 app.use(cors());
-app.use(express.json({ limit: '64kb' }));
+app.use(express.json({ limit: '10mb' }));
 
 const PORT = Number(process.env.PORT || 8787);
 
@@ -31,7 +31,42 @@ const PROVIDER_POOLS = {
     model: process.env.GROQ_MODEL || 'llama-3.1-8b-instant',
     formatRequest: (body) => body,
     formatResponse: (data) => data,
-    authHeader: (key) => `Bearer ${key}`
+    authHeader: (key) => `Bearer ${key}`,
+    supportsVision: false
+  },
+  groqVision: {
+    keys: parseKeyPool(process.env.GROQ_API_KEYS),
+    baseUrl: 'https://api.groq.com/openai/v1/chat/completions',
+    model: process.env.GROQ_VISION_MODEL || 'llama-3.2-11b-vision-preview',
+    formatRequest: (body) => body,
+    formatResponse: (data) => data,
+    authHeader: (key) => `Bearer ${key}`,
+    supportsVision: true
+  },
+  gemini: {
+    keys: parseKeyPool(process.env.GEMINI_API_KEYS),
+    baseUrl: 'https://generativelanguage.googleapis.com/v1beta/models',
+    model: process.env.GEMINI_MODEL || 'gemini-1.5-flash',
+    formatRequest: (body) => ({
+      contents: body.messages.map(m => ({
+        role: m.role === 'assistant' ? 'model' : 'user',
+        parts: Array.isArray(m.content) ? m.content : [{ text: m.content }]
+      })),
+      generationConfig: {
+        temperature: body.temperature ?? 0,
+        maxOutputTokens: body.max_tokens || 650
+      }
+    }),
+    formatResponse: (data) => ({
+      choices: [{
+        message: {
+          role: 'assistant',
+          content: data.candidates?.[0]?.content?.parts?.[0]?.text || ''
+        }
+      }]
+    }),
+    authHeader: (key) => `${key}`, // passed as query param
+    supportsVision: true
   },
   openai: {
     keys: parseKeyPool(process.env.OPENAI_API_KEYS),
@@ -39,7 +74,8 @@ const PROVIDER_POOLS = {
     model: process.env.OPENAI_MODEL || 'gpt-4o-mini',
     formatRequest: (body) => body,
     formatResponse: (data) => data,
-    authHeader: (key) => `Bearer ${key}`
+    authHeader: (key) => `Bearer ${key}`,
+    supportsVision: true
   },
   azure: {
     keys: parseAzurePool(process.env.AZURE_OPENAI_KEYS),
@@ -47,7 +83,8 @@ const PROVIDER_POOLS = {
     model: null,   // per-key deployment
     formatRequest: (body) => body,
     formatResponse: (data) => data,
-    authHeader: (key) => `Bearer ${key.key}`
+    authHeader: (key) => `Bearer ${key.key}`,
+    supportsVision: true
   },
   anthropic: {
     keys: parseKeyPool(process.env.ANTHROPIC_API_KEYS),
@@ -67,12 +104,13 @@ const PROVIDER_POOLS = {
         }
       }]
     }),
-    authHeader: (key) => `Bearer ${key}`
+    authHeader: (key) => `Bearer ${key}`,
+    supportsVision: true
   }
 };
 
 // Round-robin index per provider
-const poolIndices = { groq: 0, openai: 0, azure: 0, anthropic: 0 };
+const poolIndices = { groq: 0, groqVision: 0, gemini: 0, openai: 0, azure: 0, anthropic: 0 };
 const keyCooldowns = {}; // key -> timestamp when 429 cooldown ends
 
 function getNextKey(provider, userKey) {
@@ -135,17 +173,29 @@ async function callProvider(provider, userKey, body) {
 
     const currentKey = currentKeyInfo.key;
     const currentAuth = pool.authHeader(currentKey);
-    const url = provider === 'azure'
-      ? `${baseUrl}/openai/deployments/${model}/chat/completions?api-version=${typeof currentKey === 'object' ? currentKey.apiVersion : '2024-08-01-preview'}`
-      : pool.baseUrl;
+    let url;
+
+    if (provider === 'gemini') {
+      url = `${baseUrl}/${model}:generateContent?key=${currentKey}`;
+    } else if (provider === 'azure') {
+      url = `${baseUrl}/openai/deployments/${model}/chat/completions?api-version=${typeof currentKey === 'object' ? currentKey.apiVersion : '2024-08-01-preview'}`;
+    } else {
+      url = pool.baseUrl;
+    }
 
     try {
+      const headers = {
+        'Content-Type': 'application/json'
+      };
+      if (provider !== 'gemini') {
+        headers['Authorization'] = currentAuth;
+      } else {
+        // For Gemini, auth is in query param, but we still need the key for the request
+      }
+
       const response = await fetch(url, {
         method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-          'Authorization': currentAuth
-        },
+        headers,
         body: JSON.stringify(requestBody)
       });
 
@@ -281,7 +331,7 @@ function normalizeSchedule(parsed) {
   };
 }
 
-function buildPrompt() {
+function buildTextPrompt() {
   return `You are LuxShift's schedule parser. Return JSON only. No markdown. No explanation. No code fences. The response must begin with { and end with }.
 
 Use this exact shape:
@@ -308,13 +358,85 @@ Rules:
 - Do not use null values.`;
 }
 
+function buildVisionPrompt() {
+  return `You are LuxShift's schedule parser. Analyze the provided image(s) which may contain timetables, schedules, emails, messages, or screenshots of calendars. Extract structured schedule blocks.
+
+Return JSON only. No markdown. No explanation. No code fences. The response must begin with { and end with }.
+
+Use this exact shape:
+{
+  "summary": "short summary of what was found in the image",
+  "confidence": 0.9,
+  "reasons": ["short assumption only when needed"],
+  "blocks": [
+    {
+      "title": "string",
+      "start": "HH:MM",
+      "end": "HH:MM",
+      "type": "work|study|break|meal|sleep|exercise|personal|commute|other",
+      "note": "short useful sentence",
+      "confidence": 0.9
+    }
+  ]
+}
+
+Rules:
+- Use 24-hour HH:MM format.
+- Return 3 to 6 blocks in chronological order.
+- Infer reasonable end times when necessary.
+- Do not use null values.
+- Extract times from the image (look for clocks, timestamps, time ranges, calendar events).
+- Handle messy OCR text, crossed-out times, handwritten notes.
+- If the image contains multiple days, focus on the current/next day.
+- If it's a message/email asking to stay late, create a "work" block with the new end time.`;
+}
+
 async function askProvider(provider, userKey, text) {
   const response = await callProvider(provider, userKey, {
     model: PROVIDER_POOLS[provider]?.model,
     messages: [
-      { role: 'system', content: buildPrompt() },
+      { role: 'system', content: buildTextPrompt() },
       { role: 'user', content: text }
     ],
+    temperature: 0,
+    max_tokens: 650
+  });
+
+  return response.data.choices?.[0]?.message?.content || '';
+}
+
+async function askVisionProvider(provider, userKey, images, textPrompt = '') {
+  const visionText = textPrompt || 'Extract schedule blocks from this image.';
+
+  let messages;
+  if (provider === 'gemini') {
+    const parts = [{ text: visionText }];
+    for (const img of images) {
+      parts.push({
+        inline_data: {
+          mime_type: img.mimeType || 'image/jpeg',
+          data: img.base64
+        }
+      });
+    }
+    messages = [{ role: 'user', parts }];
+  } else {
+    // OpenAI/Groq format
+    const content = [{ type: 'text', text: visionText }];
+    for (const img of images) {
+      content.push({
+        type: 'image_url',
+        image_url: {
+          url: `data:${img.mimeType || 'image/jpeg'};base64,${img.base64}`
+        }
+      });
+    }
+    messages = [{ role: 'user', content }];
+  }
+
+  const response = await callProvider(provider, userKey, {
+    model: PROVIDER_POOLS[provider]?.model,
+    messages,
     temperature: 0,
     max_tokens: 650
   });
@@ -338,7 +460,9 @@ app.get('/ping', (_req, res) => res.json({ ok: true, ts: Date.now() }));
 app.post('/parse-schedule', async (req, res) => {
   try {
     const text = String(req.body?.text || '').trim();
-    if (!text) return res.status(400).json({ error: 'Missing text.' });
+    const images = Array.isArray(req.body?.images) ? req.body.images : [];
+
+    if (!text && images.length === 0) return res.status(400).json({ error: 'Missing text or images.' });
     if (text.length > 8000) {
       return res.status(400).json({ error: 'Schedule text is too long. Keep it under 8,000 characters.' });
     }
@@ -347,7 +471,27 @@ app.post('/parse-schedule', async (req, res) => {
     const userProvider = req.headers['x-user-provider'] || 'groq';
     const userKey = req.headers['x-user-api-key'] || null;
 
-    const rawResponse = await askProvider(userProvider, userKey, text);
+    let rawResponse;
+    let keySource = 'pool';
+
+    if (images.length > 0) {
+      // Vision parsing
+      const visionProviders = ['gemini', 'groqVision', 'openai', 'azure'];
+      const visionProvider = visionProviders.includes(userProvider) ? userProvider : 'gemini';
+
+      if (!PROVIDER_POOLS[visionProvider]?.supportsVision) {
+        return res.status(400).json({ error: `Provider ${visionProvider} does not support vision.` });
+      }
+
+      rawResponse = await askVisionProvider(visionProvider, userKey, images);
+    } else {
+      // Text parsing
+      rawResponse = await askProvider(userProvider, userKey, text);
+    }
+
+    // For key source, we infer from whether user provided key
+    keySource = userKey ? 'user' : 'pool';
+
     const parsed = cleanJson(rawResponse);
 
     if (!parsed) {
@@ -363,10 +507,7 @@ app.post('/parse-schedule', async (req, res) => {
         : ['Add clearer times and an ending time to build a timeline.'];
     }
 
-    // Return key source in header
-    // Note: We can't easily return the keySource from askProvider without refactoring
-    // For now, infer from whether userKey was provided
-    res.set('x-key-source', userKey ? 'user' : 'pool');
+    res.set('x-key-source', keySource);
     return res.json(schedule);
   } catch (error) {
     return res.status(500).json({

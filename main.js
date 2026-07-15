@@ -615,6 +615,7 @@ function pushStateToRenderer(state) {
 async function applyDisplayAdaptation(intensity) {
   if (process.platform !== 'darwin') return;
 
+  // Safety: Only apply Night Shift if intensity is actually > 0
   if (intensity <= 0) {
     await applyNightShift(0);
     await setBrightness(1.0);
@@ -684,6 +685,9 @@ app.whenReady().then(async () => {
 
   // Create window (needed before starting tick)
   const win = createWindow();
+
+  // Ensure Night Shift is OFF at startup (safety)
+  await applyNightShift(0);
 
   // Start wind-down tick (includes sunlight notifications)
   startWindDownTick();

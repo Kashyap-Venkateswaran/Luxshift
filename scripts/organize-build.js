@@ -30,6 +30,19 @@ if (!fs.existsSync(distDir)) {
 fs.mkdirSync(releasesDir, { recursive: true });
 fs.mkdirSync(olderReleasesDir, { recursive: true });
 
+// Move previous version's folder to olderreleases (if it exists and isn't current)
+const prevVersionDirs = fs.readdirSync(releasesDir, { withFileTypes: true })
+  .filter(d => d.isDirectory() && d.name !== currentVersion && d.name !== 'olderreleases');
+
+for (const prevDir of prevVersionDirs) {
+  const srcDir = path.join(releasesDir, prevDir.name);
+  const destDir = path.join(olderReleasesDir, prevDir.name);
+  if (!fs.existsSync(destDir)) {
+    fs.renameSync(srcDir, destDir);
+    console.log(`moved previous release ${prevDir.name} → olderreleases/`);
+  }
+}
+
 const releaseFiles = fs
   .readdirSync(distDir)
   .filter((name) => {

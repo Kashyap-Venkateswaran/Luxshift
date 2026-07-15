@@ -24,6 +24,13 @@ const overlayEl = document.getElementById('luxshift-overlay');
 const winddownBar = document.getElementById('winddown-bar');
 const winddownLabel = document.getElementById('winddown-label');
 
+// Image upload elements
+const imageUpload = document.getElementById('imageUpload');
+const imageUploadBtn = document.getElementById('imageUploadBtn');
+const imagePreview = document.getElementById('imagePreview');
+const imagePreviewImg = document.getElementById('imagePreviewImg');
+const removeImageBtn = document.getElementById('removeImageBtn');
+
 const exampleText = 'My day starts at 9:00 AM. I have focused work until 12:30 PM, lunch after that, a football game I want to watch at 1:00 PM, then more work in the evening, and I expect everything to end by 11:00 PM.';
 const exampleLateChange = 'Please move the afternoon around the football game and keep the updated timeline until the day ends.';
 const appName = window.luxshiftAPI?.appName || 'LuxShift';
@@ -48,21 +55,30 @@ let userApiKey = null;
 let userApiProvider = 'groq';
 let userApiAzureConfig = {};
 
+// Image upload state
+let uploadedImage = null;
+let lateChangesUploadedImage = null;
+
 wireUI();
 renderInitialState();
 bootstrap();
 
-async function parseScheduleViaProxy(text) {
+async function parseScheduleViaProxy(text, images = []) {
   const headers = { 'Content-Type': 'application/json' };
   if (userApiKey) {
     headers['x-user-provider'] = userApiProvider;
     headers['x-user-api-key'] = userApiKey;
   }
 
+  const body = { text };
+  if (images.length > 0) {
+    body.images = images;
+  }
+
   const response = await fetch('https://luxshift.onrender.com/parse-schedule', {
     method: 'POST',
     headers,
-    body: JSON.stringify({ text })
+    body: JSON.stringify(body)
   });
 
   const data = await response.json();
@@ -295,7 +311,8 @@ async function fetchInitialWindDownState() {
 function wireUI() {
   fillBtn?.addEventListener('click', () => {
     input.value = exampleText;
-    lateChangesInput.value = exampleLateChange;
+    // Only fill the main plan, not late changes
+    // lateChangesInput.value = exampleLateChange;
     input.focus();
   });
 
@@ -425,6 +442,127 @@ function wireUI() {
         apiKeyInput.type = 'password';
         toggleKeyBtn.textContent = 'Show';
       }
+    });
+  }
+
+  locationSearchInput?.addEventListener('keydown', (event) => {
+    if (event.key === 'Enter') {
+      event.preventDefault();
+      searchManualLocation();
+    }
+  });
+
+  locationSearchInput?.addEventListener('input', () => {
+    if (!locationSearchInput.value.trim()) {
+      clearLocationResults();
+    }
+  });
+
+  // Image upload handling
+  const imageUploadBtn = document.getElementById('imageUploadBtn');
+  const imageUpload = document.getElementById('imageUpload');
+  const removeImageBtn = document.getElementById('removeImageBtn');
+  const imagePreview = document.getElementById('imagePreview');
+  const imagePreviewImg = document.getElementById('imagePreviewImg');
+
+  if (imageUploadBtn && imageUpload) {
+    imageUploadBtn.addEventListener('click', () => {
+      imageUpload.click();
+    });
+  }
+
+  if (imageUpload) {
+    imageUpload.addEventListener('change', (e) => {
+      const file = e.target.files[0];
+      if (!file) return;
+
+      // Validate file type
+      if (!file.type.startsWith('image/')) {
+        settingsHint.textContent = 'Please select an image file.';
+        return;
+      }
+
+      // Validate file size (max 10MB)
+      if (file.size > 10 * 1024 * 1024) {
+        settingsHint.textContent = 'Image too large. Maximum 10MB.';
+        return;
+      }
+
+      const reader = new FileReader();
+      reader.onload = (event) => {
+        uploadedImage = {
+          base64: event.target.result.split(',')[1],
+          mimeType: file.type
+        };
+        imagePreviewImg.src = event.target.result;
+        imagePreview.style.display = 'block';
+        settingsHint.textContent = 'Image uploaded. Ready to parse.';
+      };
+      reader.readAsDataURL(file);
+    });
+  }
+
+  if (removeImageBtn) {
+    removeImageBtn.addEventListener('click', () => {
+      uploadedImage = null;
+      imagePreview.style.display = 'none';
+      imagePreviewImg.src = '';
+      if (imageUpload) imageUpload.value = '';
+      settingsHint.textContent = 'Image removed.';
+    });
+  }
+
+  // Late Changes Image upload handling
+  const lateChangesImageUploadBtn = document.getElementById('lateChangesImageUploadBtn');
+  const lateChangesImageUpload = document.getElementById('lateChangesImageUpload');
+  const lateChangesRemoveImageBtn = document.getElementById('lateChangesRemoveImageBtn');
+  const lateChangesImagePreview = document.getElementById('lateChangesImagePreview');
+  const lateChangesImagePreviewImg = document.getElementById('lateChangesImagePreviewImg');
+
+  if (lateChangesImageUploadBtn && lateChangesImageUpload) {
+    lateChangesImageUploadBtn.addEventListener('click', () => {
+      lateChangesImageUpload.click();
+    });
+  }
+
+  if (lateChangesImageUpload) {
+    lateChangesImageUpload.addEventListener('change', (e) => {
+      const file = e.target.files[0];
+      if (!file) return;
+
+      // Validate file type
+      if (!file.type.startsWith('image/')) {
+        settingsHint.textContent = 'Please select an image file.';
+        return;
+      }
+
+      // Validate file size (max 10MB)
+      if (file.size > 10 * 1024 * 1024) {
+        settingsHint.textContent = 'Image too large. Maximum 10MB.';
+        return;
+      }
+
+      const reader = new FileReader();
+      reader.onload = (event) => {
+        lateChangesUploadedImage = {
+          base64: event.target.result.split(',')[1],
+          mimeType: file.type
+        };
+        lateChangesImagePreviewImg.src = event.target.result;
+        lateChangesImagePreview.style.display = 'block';
+        settingsHint.textContent = 'Late changes image uploaded. Ready to parse.';
+      };
+      reader.readAsDataURL(file);
+    });
+  }
+
+  if (lateChangesRemoveImageBtn) {
+    lateChangesRemoveImageBtn.addEventListener('click', () => {
+      lateChangesUploadedImage = null;
+      lateChangesImagePreview.style.display = 'none';
+      lateChangesImagePreviewImg.src = '';
+      if (lateChangesImageUpload) lateChangesImageUpload.value = '';
+      settingsHint.textContent = 'Late changes image removed.';
     });
   }
 
@@ -730,7 +868,7 @@ async function handleParse() {
   const baseText = input.value.trim();
   const lateChanges = lateChangesInput.value.trim();
 
-  if (!baseText && !lateChanges) {
+  if (!baseText && !lateChanges && !uploadedImage && !lateChangesUploadedImage) {
     renderEmptyPreview();
     modeValue.textContent = 'Waiting for input';
     return;
@@ -754,7 +892,10 @@ async function handleParse() {
     .join('\n\n');
 
   try {
-    const result = await parseScheduleViaProxy(parseText);
+    const images = [];
+    if (uploadedImage) images.push(uploadedImage);
+    if (lateChangesUploadedImage) images.push(lateChangesUploadedImage);
+    const result = await parseScheduleViaProxy(parseText, images);
     renderParseResult(result);
     await persistCurrentSchedule(result);
   } catch (error) {
