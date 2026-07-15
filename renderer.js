@@ -382,6 +382,38 @@ function wireUI() {
     });
   }
 
+  // Clear All Data button
+  const clearAllDataBtn = document.getElementById('clearAllDataBtn');
+  if (clearAllDataBtn) {
+    clearAllDataBtn.addEventListener('click', async () => {
+      if (!confirm('This will permanently delete your API key, saved schedule, and all preferences. Are you sure?')) {
+        return;
+      }
+      try {
+        await window.luxshiftAPI?.clearAllUserData();
+        userApiKey = null;
+        userApiAzureConfig = {};
+        if (apiKeyInput) apiKeyInput.value = '';
+        input.value = '';
+        lateChangesInput.value = '';
+        renderEmptyPreview();
+        modeValue.textContent = 'Idle';
+        settingsHint.textContent = 'All user data cleared.';
+        updateKeySourceStatus('pool');
+        // Reset form preferences
+        bedtimeInput.value = '00:30';
+        wakeInput.value = '07:30';
+        windDownInput.value = '90';
+        timeFormatInput.value = '12h';
+        locationSearchInput.value = '';
+        clearLocationResults();
+        clearSettingsSummary();
+      } catch (e) {
+        settingsHint.textContent = 'Failed to clear all data.';
+      }
+    });
+  }
+
   // Toggle API key visibility
   const toggleKeyBtn = document.getElementById('toggleKeyVisibility');
   if (toggleKeyBtn && apiKeyInput) {

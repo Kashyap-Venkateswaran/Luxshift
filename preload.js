@@ -105,5 +105,6 @@ contextBridge.exposeInMainWorld('luxshiftAPI', {
   // API Key management
   getUserApiKey: () => ipcRenderer.invoke('luxshift:get-user-api-key'),
   saveUserApiKey: (key, provider) => ipcRenderer.invoke('luxshift:save-user-api-key', { key, provider }),
-  deleteUserApiKey: () => ipcRenderer.invoke('luxshift:delete-user-api-key')
+  deleteUserApiKey: () => ipcRenderer.invoke('luxshift:delete-user-api-key'),
+  clearAllUserData: () => ipcRenderer.invoke('luxshift:clear-all-user-data')
 });

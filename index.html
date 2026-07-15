@@ -2,7 +2,7 @@
 <html lang="en">
 <head>
   <meta charset="UTF-8" />
-  <meta http-equiv="Content-Security-Policy" content="default-src 'self'; style-src 'self' 'unsafe-inline'; script-src 'self'; img-src 'self' data:; connect-src 'self' https://luxshift.onrender.com">  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <meta http-equiv="Content-Security-Policy" content="default-src 'self'; style-src 'self' 'unsafe-inline'; script-src 'self'; img-src 'self' data:; connect-src 'self' https://luxshift.onrender.com;">
   <title>LuxShift</title>
   <style>
     :root {
@@ -959,6 +959,10 @@
           <div class="button-row">
             <button id="saveApiKeyBtn" class="primary-btn" type="button">Save Key</button>
             <button id="clearApiKeyBtn" class="secondary-btn" type="button">Clear Key</button>
+          </div>
+
+          <div class="button-row" style="margin-top: 8px;">
+            <button id="clearAllDataBtn" class="secondary-btn" type="button" style="background: rgba(255, 100, 100, 0.1); border-color: rgba(255, 100, 100, 0.3); color: #ff8888;">Clear All My Data</button>
           </div>
 
           <p id="apiKeyStatus" class="field-helper" style="margin-top: 8px;">Using shared pool</p>

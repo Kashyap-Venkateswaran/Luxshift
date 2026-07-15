@@ -881,6 +881,11 @@ ipcMain.handle('luxshift:delete-user-api-key', async () => {
   return result;
 });
 
+ipcMain.handle('luxshift:clear-all-user-data', async () => {
+  const result = clearAllUserData();
+  return result;
+});
+
 // ---- Update check helper ----
 async function checkForUpdates(showFeedback = false) {
   try {

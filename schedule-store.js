@@ -188,6 +188,14 @@ function deleteUserApiKey() {
   return { ok: true };
 }
 
+function clearAllUserData() {
+  scheduleStore.set('userApiKey', null);
+  scheduleStore.set('userApiProvider', null);
+  scheduleStore.set('activeSchedule', null);
+  scheduleStore.set('archivedSchedules', []);
+  return { ok: true };
+}
+
 module.exports = {
   getActiveSchedule,
   saveActiveSchedule,
@@ -196,5 +204,6 @@ module.exports = {
   dateKeyFromDate,
   getUserApiKey,
   saveUserApiKey,
-  deleteUserApiKey
+  deleteUserApiKey,
+  clearAllUserData
 };
