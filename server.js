@@ -7,9 +7,170 @@ app.use(cors());
 app.use(express.json({ limit: '64kb' }));
 
 const PORT = Number(process.env.PORT || 8787);
-const GROQ_API_KEY = process.env.GROQ_API_KEY;
-const GROQ_MODEL = process.env.GROQ_MODEL || 'llama-3.1-8b-instant';
-const GROQ_URL = 'https://api.groq.com/openai/v1/chat/completions';
+
+// Provider configurations from env vars
+function parseKeyPool(envVar) {
+  if (!envVar) return [];
+  return envVar.split(',').map(k => k.trim()).filter(Boolean);
+}
+
+function parseAzurePool(envVar) {
+  if (!envVar) return [];
+  try {
+    const parsed = JSON.parse(envVar);
+    return Array.isArray(parsed) ? parsed : [];
+  } catch {
+    return [];
+  }
+}
+
+const PROVIDER_POOLS = {
+  groq: {
+    keys: parseKeyPool(process.env.GROQ_API_KEYS),
+    baseUrl: 'https://api.groq.com/openai/v1/chat/completions',
+    model: process.env.GROQ_MODEL || 'llama-3.1-8b-instant',
+    formatRequest: (body) => body,
+    formatResponse: (data) => data,
+    authHeader: (key) => `Bearer ${key}`
+  },
+  openai: {
+    keys: parseKeyPool(process.env.OPENAI_API_KEYS),
+    baseUrl: 'https://api.openai.com/v1/chat/completions',
+    model: process.env.OPENAI_MODEL || 'gpt-4o-mini',
+    formatRequest: (body) => body,
+    formatResponse: (data) => data,
+    authHeader: (key) => `Bearer ${key}`
+  },
+  azure: {
+    keys: parseAzurePool(process.env.AZURE_OPENAI_KEYS),
+    baseUrl: null, // per-key endpoint
+    model: null,   // per-key deployment
+    formatRequest: (body) => body,
+    formatResponse: (data) => data,
+    authHeader: (key) => `Bearer ${key.key}`
+  },
+  anthropic: {
+    keys: parseKeyPool(process.env.ANTHROPIC_API_KEYS),
+    baseUrl: 'https://api.anthropic.com/v1/messages',
+    model: process.env.ANTHROPIC_MODEL || 'claude-3-5-sonnet-20241022',
+    formatRequest: (body) => ({
+      model: body.model,
+      messages: body.messages,
+      max_tokens: body.max_tokens || 4096,
+      temperature: body.temperature ?? 0
+    }),
+    formatResponse: (data) => ({
+      choices: [{
+        message: {
+          role: 'assistant',
+          content: data.content?.[0]?.text || ''
+        }
+      }]
+    }),
+    authHeader: (key) => `Bearer ${key}`
+  }
+};
+
+// Round-robin index per provider
+const poolIndices = { groq: 0, openai: 0, azure: 0, anthropic: 0 };
+const keyCooldowns = {}; // key -> timestamp when 429 cooldown ends
+
+function getNextKey(provider, userKey) {
+  const pool = PROVIDER_POOLS[provider];
+  if (!pool || !pool.keys.length) return null;
+
+  // User provided their own key
+  if (userKey) {
+    return { key: userKey, isUserKey: true };
+  }
+
+  const now = Date.now();
+  const keys = pool.keys;
+  const startIdx = poolIndices[provider] || 0;
+
+  for (let i = 0; i < keys.length; i++) {
+    const idx = (startIdx + i) % keys.length;
+    const key = keys[idx];
+    const cooldownKey = `${provider}:${typeof key === 'object' ? key.key : key}`;
+
+    if (!keyCooldowns[cooldownKey] || keyCooldowns[cooldownKey] < now) {
+      poolIndices[provider] = (idx + 1) % keys.length;
+      return { key, isUserKey: false };
+    }
+  }
+
+  // All keys in cooldown, return first anyway (will retry)
+  poolIndices[provider] = (startIdx + 1) % keys.length;
+  return { key: keys[startIdx], isUserKey: false };
+}
+
+function markKeyCooldown(provider, key) {
+  const keyStr = typeof key === 'object' ? key.key : key;
+  keyCooldowns[`${provider}:${keyStr}`] = Date.now() + 60000; // 60s cooldown
+}
+
+async function callProvider(provider, userKey, body) {
+  const pool = PROVIDER_POOLS[provider];
+  if (!pool) throw new Error(`Unknown provider: ${provider}`);
+
+  const keyInfo = getNextKey(provider, userKey);
+  if (!keyInfo) throw new Error(`No API keys configured for ${provider}`);
+
+  const key = keyInfo.key;
+  const isUserKey = keyInfo.isUserKey;
+  const authHeader = pool.authHeader(key);
+  const baseUrl = pool.baseUrl || (typeof key === 'object' ? key.endpoint : '');
+  const model = pool.model || (typeof key === 'object' ? key.deployment : '');
+
+  if (provider === 'azure' && !baseUrl) {
+    throw new Error('Azure endpoint not configured');
+  }
+
+  const requestBody = pool.formatRequest({ ...body, model: model || body.model });
+
+  let lastError;
+  for (let attempt = 0; attempt < 3; attempt++) {
+    const currentKeyInfo = attempt === 0 ? keyInfo : getNextKey(provider, userKey);
+    if (!currentKeyInfo) break;
+
+    const currentKey = currentKeyInfo.key;
+    const currentAuth = pool.authHeader(currentKey);
+    const url = provider === 'azure'
+      ? `${baseUrl}/openai/deployments/${model}/chat/completions?api-version=${typeof currentKey === 'object' ? currentKey.apiVersion : '2024-08-01-preview'}`
+      : pool.baseUrl;
+
+    try {
+      const response = await fetch(url, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'Authorization': currentAuth
+        },
+        body: JSON.stringify(requestBody)
+      });
+
+      if (response.status === 429) {
+        markKeyCooldown(provider, currentKey);
+        lastError = new Error('Rate limited');
+        continue;
+      }
+
+      if (!response.ok) {
+        const err = await response.json().catch(() => ({}));
+        throw new Error(err.error?.message || `Provider error: ${response.status}`);
+      }
+
+      const data = await response.json();
+      return { data: pool.formatResponse(data), keySource: isUserKey ? 'user' : 'pool' };
+    } catch (err) {
+      lastError = err;
+      if (err.message === 'Rate limited') continue;
+      break;
+    }
+  }
+
+  throw lastError || new Error('All provider keys exhausted');
+}
 
 const allowedTypes = new Set([
   'work', 'study', 'break', 'meal', 'sleep',
@@ -147,42 +308,27 @@ Rules:
 - Do not use null values.`;
 }
 
-async function askGroq(text) {
-  const response = await fetch(GROQ_URL, {
-    method: 'POST',
-    headers: {
-      Authorization: `Bearer ${GROQ_API_KEY}`,
-      'Content-Type': 'application/json'
-    },
-    body: JSON.stringify({
-      model: GROQ_MODEL,
-      messages: [
-        { role: 'system', content: buildPrompt() },
-        { role: 'user', content: text }
-      ],
-      temperature: 0,
-      max_tokens: 650
-    })
+async function askProvider(provider, userKey, text) {
+  const response = await callProvider(provider, userKey, {
+    model: PROVIDER_POOLS[provider]?.model,
+    messages: [
+      { role: 'system', content: buildPrompt() },
+      { role: 'user', content: text }
+    ],
+    temperature: 0,
+    max_tokens: 650
   });
 
-  const data = await response.json();
-
-  if (!response.ok) {
-    throw new Error(
-      data?.error?.message ||
-      `Groq request failed (${response.status})`
-    );
-  }
-
-  return data?.choices?.[0]?.message?.content || '';
+  return response.data.choices?.[0]?.message?.content || '';
 }
 
 // Health check — also used as keep-alive ping
 app.get('/health', (_req, res) => {
   res.json({
     ok: true,
-    model: GROQ_MODEL,
-    keyConfigured: Boolean(GROQ_API_KEY)
+    model: 'multi-provider',
+    providers: Object.keys(PROVIDER_POOLS).filter(p => PROVIDER_POOLS[p].keys.length > 0),
+    keyConfigured: Object.values(PROVIDER_POOLS).some(p => p.keys.length > 0)
   });
 });
 
@@ -191,17 +337,17 @@ app.get('/ping', (_req, res) => res.json({ ok: true, ts: Date.now() }));
 
 app.post('/parse-schedule', async (req, res) => {
   try {
-    if (!GROQ_API_KEY) {
-      return res.status(500).json({ error: 'Missing GROQ_API_KEY on server.' });
-    }
-
     const text = String(req.body?.text || '').trim();
     if (!text) return res.status(400).json({ error: 'Missing text.' });
     if (text.length > 8000) {
       return res.status(400).json({ error: 'Schedule text is too long. Keep it under 8,000 characters.' });
     }
 
-    const rawResponse = await askGroq(text);
+    // Read provider and key from headers
+    const userProvider = req.headers['x-user-provider'] || 'groq';
+    const userKey = req.headers['x-user-api-key'] || null;
+
+    const rawResponse = await askProvider(userProvider, userKey, text);
     const parsed = cleanJson(rawResponse);
 
     if (!parsed) {
@@ -217,6 +363,10 @@ app.post('/parse-schedule', async (req, res) => {
         : ['Add clearer times and an ending time to build a timeline.'];
     }
 
+    // Return key source in header
+    // Note: We can't easily return the keySource from askProvider without refactoring
+    // For now, infer from whether userKey was provided
+    res.set('x-key-source', userKey ? 'user' : 'pool');
     return res.json(schedule);
   } catch (error) {
     return res.status(500).json({
@@ -228,7 +378,9 @@ app.post('/parse-schedule', async (req, res) => {
 
 app.listen(PORT, () => {
   console.log(`LuxShift proxy running at http://localhost:${PORT}`);
-  console.log(`Groq model: ${GROQ_MODEL}`);
+  console.log('Configured providers:', Object.entries(PROVIDER_POOLS)
+    .filter(([, p]) => p.keys.length > 0)
+    .map(([name, p]) => `${name} (${p.keys.length} keys)`).join(', ') || 'none');
 });
 
 // Keep-alive: ping self every 10 minutes to prevent Render free tier spin-down

@@ -4,7 +4,9 @@ const scheduleStore = new ScheduleStore({
   name: 'luxshift-schedules',
   defaults: {
     activeSchedule: null,
-    archivedSchedules: []
+    archivedSchedules: [],
+    userApiKey: null,
+    userApiProvider: null
   }
 });
 
@@ -162,10 +164,37 @@ function archiveExpiredActiveSchedule() {
   return { ok: true, archived: true };
 }
 
+function getUserApiKey() {
+  const key = scheduleStore.get('userApiKey');
+  const provider = scheduleStore.get('userApiProvider');
+  if (!key || !provider) return { ok: true, key: null, provider: null };
+  return { ok: true, key, provider };
+}
+
+function saveUserApiKey(key, provider) {
+  if (!key || !provider) {
+    scheduleStore.set('userApiKey', null);
+    scheduleStore.set('userApiProvider', null);
+    return { ok: true, cleared: true };
+  }
+  scheduleStore.set('userApiKey', key);
+  scheduleStore.set('userApiProvider', provider);
+  return { ok: true, key, provider };
+}
+
+function deleteUserApiKey() {
+  scheduleStore.set('userApiKey', null);
+  scheduleStore.set('userApiProvider', null);
+  return { ok: true };
+}
+
 module.exports = {
   getActiveSchedule,
   saveActiveSchedule,
   clearActiveSchedule,
   archiveExpiredActiveSchedule,
-  dateKeyFromDate
+  dateKeyFromDate,
+  getUserApiKey,
+  saveUserApiKey,
+  deleteUserApiKey
 };

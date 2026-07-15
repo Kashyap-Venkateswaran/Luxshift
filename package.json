@@ -1,7 +1,7 @@
 {
   "name": "luxshift",
-  "version": "1.2.1",
-  "description": "LuxShift desktop prototype",
+  "version": "1.3.0",
+  "description": "LuxShift desktop app - reduce eye strain and protect sleep schedule when working late",
   "main": "main.js",
   "author": "LuxshiftOfficial",
   "repository": {
@@ -14,8 +14,8 @@
     "dist": "electron-builder --mac --universal && node scripts/organize-build.js"
   },
   "devDependencies": {
-    "electron": "32.3.3",
-    "electron-builder": "^24.13.3"
+    "electron": "^43.1.1",
+    "electron-builder": "^26.15.3"
   },
   "dependencies": {
     "cors": "^2.8.6",

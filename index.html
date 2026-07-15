@@ -915,6 +915,55 @@
           <div id="settingsSummary" class="settings-summary"></div>
         </div>
       </section>
+
+      <section class="settings-card">
+        <div class="settings-header">
+          <h2>AI Provider & API Key</h2>
+        </div>
+
+        <div class="settings-panel">
+          <label>
+            AI Provider
+            <select id="apiProviderSelect">
+              <option value="groq">Groq (free, fast)</option>
+              <option value="openai">OpenAI</option>
+              <option value="azure">Azure OpenAI</option>
+              <option value="anthropic">Anthropic</option>
+              <option value="custom">Custom (OpenAI-compatible)</option>
+            </select>
+          </label>
+
+          <label>
+            API Key
+            <div style="display: flex; gap: 8px;">
+              <input id="apiKeyInput" type="password" placeholder="Enter your API key" style="flex: 1;" />
+              <button id="toggleKeyVisibility" type="button" class="secondary-btn" style="padding: 12px 16px; white-space: nowrap;">Show</button>
+            </div>
+          </label>
+
+          <div id="azureFields" class="input-stack" style="display: none; margin-top: 8px;">
+            <label>
+              Azure Endpoint
+              <input id="azureEndpoint" type="text" placeholder="https://your-resource.openai.azure.com" />
+            </label>
+            <label>
+              Deployment Name
+              <input id="azureDeployment" type="text" placeholder="gpt-4o" />
+            </label>
+            <label>
+              API Version
+              <input id="azureApiVersion" type="text" placeholder="2024-08-01-preview" value="2024-08-01-preview" />
+            </label>
+          </div>
+
+          <div class="button-row">
+            <button id="saveApiKeyBtn" class="primary-btn" type="button">Save Key</button>
+            <button id="clearApiKeyBtn" class="secondary-btn" type="button">Clear Key</button>
+          </div>
+
+          <p id="apiKeyStatus" class="field-helper" style="margin-top: 8px;">Using shared pool</p>
+        </div>
+      </section>
     </aside>
 
     <main class="main">

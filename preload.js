@@ -99,5 +99,11 @@ contextBridge.exposeInMainWorld('luxshiftAPI', {
   removePermissionListener: (listener) => {
     if (listener) ipcRenderer.removeListener('luxshift:permission-status', listener);
   },
-  getSunData
+
+  getSunData,
+
+  // API Key management
+  getUserApiKey: () => ipcRenderer.invoke('luxshift:get-user-api-key'),
+  saveUserApiKey: (key, provider) => ipcRenderer.invoke('luxshift:save-user-api-key', { key, provider }),
+  deleteUserApiKey: () => ipcRenderer.invoke('luxshift:delete-user-api-key')
 });

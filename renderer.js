@@ -43,14 +43,25 @@ let preferences = {
   timeFormatChosen: false
 };
 
+// API Key state
+let userApiKey = null;
+let userApiProvider = 'groq';
+let userApiAzureConfig = {};
+
 wireUI();
 renderInitialState();
 bootstrap();
 
 async function parseScheduleViaProxy(text) {
+  const headers = { 'Content-Type': 'application/json' };
+  if (userApiKey) {
+    headers['x-user-provider'] = userApiProvider;
+    headers['x-user-api-key'] = userApiKey;
+  }
+
   const response = await fetch('https://luxshift.onrender.com/parse-schedule', {
     method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
+    headers,
     body: JSON.stringify({ text })
   });
 
@@ -59,6 +70,10 @@ async function parseScheduleViaProxy(text) {
   if (!response.ok) {
     throw new Error(data?.error || data?.details?.error || 'Proxy parsing failed.');
   }
+
+  // Update key source status from response header
+  const keySource = response.headers.get('x-key-source');
+  updateKeySourceStatus(keySource);
 
   return {
     summary: data?.summary || '',
@@ -192,6 +207,7 @@ function showSunlightBanner(payload) {
 
 async function bootstrap() {
   await loadPreferences();
+  await loadUserApiKey();
   bindRealtimeListeners();
   await fetchInitialWindDownState();
   await restoreActiveScheduleIfAvailable();
@@ -248,7 +264,6 @@ function bindRealtimeListeners() {
   if (window.luxshiftAPI?.onPermissionStatus) {
     window.luxshiftAPI.onPermissionStatus((payload) => {
       if (payload?.accessibility) {
-        // Show granted message then auto-close onboarding after 2 seconds
         const grantedMsg = document.getElementById('onboarding-granted-msg');
         const openBtn = document.getElementById('onboarding-open-settings-btn');
         if (grantedMsg) grantedMsg.style.display = 'flex';
@@ -301,17 +316,85 @@ function wireUI() {
   searchLocationBtn?.addEventListener('click', searchManualLocation);
   useDeviceLocationBtn?.addEventListener('click', clearManualLocationAndReload);
 
-  // Permission onboarding — wired in the renderer so the buttons are not
-  // blocked by the Content-Security-Policy (script-src 'self' forbids the
-  // inline handlers that were here before).
-  const onboardingOpenSettingsBtn = document.getElementById('onboarding-open-settings-btn');
-  const onboardingSkipBtn = document.getElementById('onboarding-skip-btn');
-  onboardingOpenSettingsBtn?.addEventListener('click', async () => {
-    try { await window.luxshiftAPI?.requestAccessibility?.(); } catch (_) {}
-  });
-  onboardingSkipBtn?.addEventListener('click', () => {
-    document.getElementById('permission-onboarding')?.classList.remove('visible');
-  });
+  // Provider/API Key UI
+  const providerSelect = document.getElementById('apiProviderSelect');
+  const apiKeyInput = document.getElementById('apiKeyInput');
+  const saveKeyBtn = document.getElementById('saveApiKeyBtn');
+  const clearKeyBtn = document.getElementById('clearApiKeyBtn');
+  const azureFields = document.getElementById('azureFields');
+  const azureEndpoint = document.getElementById('azureEndpoint');
+  const azureDeployment = document.getElementById('azureDeployment');
+  const azureApiVersion = document.getElementById('azureApiVersion');
+
+  if (providerSelect) {
+    providerSelect.value = userApiProvider;
+    updateAzureFieldsVisibility(userApiProvider);
+    providerSelect.addEventListener('change', (e) => {
+      userApiProvider = e.target.value;
+      updateAzureFieldsVisibility(userApiProvider);
+    });
+  }
+
+  if (apiKeyInput && userApiKey) {
+    apiKeyInput.value = userApiKey;
+  }
+
+  if (saveKeyBtn) {
+    saveKeyBtn.addEventListener('click', async () => {
+      const key = apiKeyInput?.value?.trim();
+      if (!key) {
+        settingsHint.textContent = 'Please enter an API key.';
+        return;
+      }
+      if (userApiProvider === 'azure') {
+        const endpoint = azureEndpoint?.value?.trim();
+        const deployment = azureDeployment?.value?.trim();
+        const apiVersion = azureApiVersion?.value?.trim() || '2024-08-01-preview';
+        if (!endpoint || !deployment) {
+          settingsHint.textContent = 'Azure requires endpoint and deployment.';
+          return;
+        }
+        userApiAzureConfig = { endpoint, deployment, apiVersion };
+      }
+      try {
+        await window.luxshiftAPI?.saveUserApiKey(key, userApiProvider);
+        userApiKey = key;
+        settingsHint.textContent = `Saved ${userApiProvider} API key.`;
+        updateKeySourceStatus('user');
+      } catch (e) {
+        settingsHint.textContent = 'Failed to save API key.';
+      }
+    });
+  }
+
+  if (clearKeyBtn) {
+    clearKeyBtn.addEventListener('click', async () => {
+      try {
+        await window.luxshiftAPI?.deleteUserApiKey();
+        userApiKey = null;
+        userApiAzureConfig = {};
+        if (apiKeyInput) apiKeyInput.value = '';
+        settingsHint.textContent = 'API key cleared. Using shared pool.';
+        updateKeySourceStatus('pool');
+      } catch (e) {
+        settingsHint.textContent = 'Failed to clear API key.';
+      }
+    });
+  }
+
+  // Toggle API key visibility
+  const toggleKeyBtn = document.getElementById('toggleKeyVisibility');
+  if (toggleKeyBtn && apiKeyInput) {
+    toggleKeyBtn.addEventListener('click', () => {
+      if (apiKeyInput.type === 'password') {
+        apiKeyInput.type = 'text';
+        toggleKeyBtn.textContent = 'Hide';
+      } else {
+        apiKeyInput.type = 'password';
+        toggleKeyBtn.textContent = 'Show';
+      }
+    });
+  }
 
   locationSearchInput?.addEventListener('keydown', (event) => {
     if (event.key === 'Enter') {
@@ -325,6 +408,42 @@ function wireUI() {
       clearLocationResults();
     }
   });
+}
+
+function updateAzureFieldsVisibility(provider) {
+  const azureFields = document.getElementById('azureFields');
+  if (azureFields) {
+    azureFields.style.display = provider === 'azure' ? 'grid' : 'none';
+  }
+}
+
+function updateKeySourceStatus(source) {
+  const statusEl = document.getElementById('apiKeyStatus');
+  if (!statusEl) return;
+  if (source === 'user' || (source === undefined && userApiKey)) {
+    statusEl.textContent = `Using your ${userApiProvider} key`;
+    statusEl.style.color = '#8ef0d1';
+  } else {
+    statusEl.textContent = 'Using shared pool';
+    statusEl.style.color = '#a1afc6';
+  }
+}
+
+async function loadUserApiKey() {
+  if (!window.luxshiftAPI?.getUserApiKey) return;
+  try {
+    const result = await window.luxshiftAPI.getUserApiKey();
+    if (result?.ok && result.key) {
+      userApiKey = result.key;
+      userApiProvider = result.provider || 'groq';
+      const providerSelect = document.getElementById('apiProviderSelect');
+      const apiKeyInput = document.getElementById('apiKeyInput');
+      if (providerSelect) providerSelect.value = userApiProvider;
+      if (apiKeyInput) apiKeyInput.value = userApiKey;
+      updateAzureFieldsVisibility(userApiProvider);
+      updateKeySourceStatus('user');
+    }
+  } catch (_) {}
 }
 
 function renderInitialState() {
@@ -955,9 +1074,9 @@ function capitalize(value) {
 
 function escapeHtml(value) {
   return String(value)
-    .replaceAll('&', '&amp;')
-    .replaceAll('<', '&lt;')
-    .replaceAll('>', '&gt;')
-    .replaceAll('"', '&quot;')
-    .replaceAll("'", '&#39;');
+    .replaceAll('&', '&')
+    .replaceAll('<', '<')
+    .replaceAll('>', '>')
+    .replaceAll('"', '"')
+    .replaceAll("'", ''');
 }
