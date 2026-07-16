@@ -253,7 +253,6 @@
       text-transform: uppercase;
       letter-spacing: 0.12em;
       font-size: 0.74rem;
-      font-weight: 700;
     }
 
     .status-value,
@@ -433,7 +432,6 @@
       color: var(--text);
       font-size: 0.84rem;
       font-weight: 700;
-      white-space: nowrap;
     }
 
     .timeline-overview {
@@ -769,7 +767,6 @@
       display: flex;
       align-items: center;
       gap: 10px;
-      justify-content: center;
       color: #68d391;
       font-size: 0.9rem;
       font-weight: 600;
@@ -792,7 +789,7 @@
 </head>
 <body>
   <!-- Wind-down warm colour overlay -->
-  
+
   <!-- Permission Onboarding Overlay -->
   <div id="permission-onboarding">
     <div class="onboarding-card">
@@ -914,58 +911,151 @@
           <div id="locationResults" class="location-results"></div>
           <div id="settingsSummary" class="settings-summary"></div>
         </div>
+
+        <section class="settings-card">
+          <div class="settings-header">
+            <h2>AI Provider & API Key</h2>
+          </div>
+
+          <div class="settings-panel">
+            <label>
+              AI Provider
+              <select id="apiProviderSelect">
+                <option value="groq">Groq (free, fast)</option>
+                <option value="openai">OpenAI</option>
+                <option value="azure">Azure OpenAI</option>
+                <option value="anthropic">Anthropic</option>
+                <option value="custom">Custom (OpenAI-compatible)</option>
+              </select>
+            </label>
+
+            <label>
+              API Key
+              <div style="display: flex; gap: 8px;">
+                <input id="apiKeyInput" type="password" placeholder="Enter your API key" style="flex: 1;" />
+                <button id="toggleKeyVisibility" type="button" class="secondary-btn" style="padding: 12px 16px; white-space: nowrap;">Show</button>
+              </div>
+            </label>
+
+            <div id="azureFields" class="input-stack" style="display: none; margin-top: 8px;">
+              <label>
+                Azure Endpoint
+                <input id="azureEndpoint" type="text" placeholder="https://your-resource.openai.azure.com" />
+              </label>
+              <label>
+                Deployment Name
+                <input id="azureDeployment" type="text" placeholder="gpt-4o" />
+              </label>
+              <label>
+                API Version
+                <input id="azureApiVersion" type="text" placeholder="2024-08-01-preview" value="2024-08-01-preview" />
+              </label>
+            </div>
+
+            <div class="button-row">
+              <button id="saveApiKeyBtn" class="primary-btn" type="button">Save Key</button>
+              <button id="clearApiKeyBtn" class="secondary-btn" type="button">Clear Key</button>
+            </div>
+
+            <div class="button-row" style="margin-top: 8px;">
+              <button id="clearAllDataBtn" class="secondary-btn" type="button" style="background: rgba(255, 100, 100, 0.1); border-color: rgba(255, 100, 100, 0.3); color: #ff8888;">Clear All My Data</button>
+            </div>
+
+            <p id="apiKeyStatus" class="field-helper" style="margin-top: 8px;">Using shared pool</p>
+          </div>
+        </section>
+
+        <!-- === NEW CALENDAR INTEGRATION SECTION === -->
+        <section class="settings-card">
+          <div class="settings-header">
+            <h2>Calendar Integration</h2>
+          </div>
+          <div class="settings-panel">
+            <label>
+              Google Calendar
+              <input type="checkbox" id="googleCalendarChk" />
+            </label>
+            <label>
+              Apple Calendar
+              <input type="checkbox" id="appleCalendarChk" />
+            </label>
+            <label>
+              Notion
+              <input type="checkbox" id="notionChk" />
+            </label>
+            <div class="button-row">
+              <button id="connectCalendarBtn" class="primary-btn" type="button">Connect Selected</button>
+            </div>
+            <p id="calendarStatus" class="settings-hint"></p>
+          </div>
+        </section>
+
       </section>
 
       <section class="settings-card">
         <div class="settings-header">
-          <h2>AI Provider & API Key</h2>
+          <h2>Schedule Input</h2>
+          <div class="button-row button-row-classic">
+            <button id="parseBtn" class="primary-btn" type="button">Parse My Day</button>
+            <button id="fillBtn" class="secondary-btn" type="button">Insert Example</button>
+            <button id="clearBtn" class="secondary-btn" type="button">Clear</button>
+          </div>
         </div>
 
-        <div class="settings-panel">
+        <div class="input-stack">
           <label>
-            AI Provider
-            <select id="apiProviderSelect">
-              <option value="groq">Groq (free, fast)</option>
-              <option value="openai">OpenAI</option>
-              <option value="azure">Azure OpenAI</option>
-              <option value="anthropic">Anthropic</option>
-              <option value="custom">Custom (OpenAI-compatible)</option>
-            </select>
+            Tonight’s Plan
+            <textarea
+              id="input"
+              class="schedule-textarea"
+              placeholder="Describe tonight’s schedule, work blocks, calls, meals, downtime, and your intended sleep or wake times."
+            ></textarea>
           </label>
 
           <label>
-            API Key
-            <div style="display: flex; gap: 8px;">
-              <input id="apiKeyInput" type="password" placeholder="Enter your API key" style="flex: 1;" />
-              <button id="toggleKeyVisibility" type="button" class="secondary-btn" style="padding: 12px 16px; white-space: nowrap;">Show</button>
+            Late Changes
+            <textarea
+              id="lateChangesInput"
+              class="schedule-textarea late-changes"
+              placeholder="Add last-minute updates here, like delays, rescheduled calls, or a later bedtime."
+            ></textarea>
+          </label>
+
+          <label>
+            Upload Image (timetable, calendar screenshot, message, email)
+            <input id="imageUpload" type="file" accept="image/*" style="display: none;" />
+            <button id="imageUploadBtn" type="button" class="secondary-btn" style="width: 100%;">Choose Image</button>
+            <div id="imagePreview" style="display: none; margin-top: 8px;">
+              <img id="imagePreviewImg" src="" alt="Preview" style="max-width: 100%; max-height: 200px; border-radius: 8px; border: 1px solid rgba(255,255,255,0.1);" />
+              <button id="removeImageBtn" type="button" class="secondary-btn" style="margin-top: 8px; width: 100%;">Remove Image</button>
             </div>
           </label>
 
-          <div id="azureFields" class="input-stack" style="display: none; margin-top: 8px;">
-            <label>
-              Azure Endpoint
-              <input id="azureEndpoint" type="text" placeholder="https://your-resource.openai.azure.com" />
-            </label>
-            <label>
-              Deployment Name
-              <input id="azureDeployment" type="text" placeholder="gpt-4o" />
-            </label>
-            <label>
-              API Version
-              <input id="azureApiVersion" type="text" placeholder="2024-08-01-preview" value="2024-08-01-preview" />
-            </label>
-          </div>
+          <label>
+            Upload Image (timetable, calendar screenshot, message, email)
+            <input id="lateChangesImageUpload" type="file" accept="image/*" style="display: none;" />
+            <button id="lateChangesImageUploadBtn" type="button" class="secondary-btn" style="width: 100%;">Choose Image</button>
+            <div id="lateChangesImagePreview" style="display: none; margin-top: 8px;">
+              <img id="lateChangesImagePreviewImg" src="" alt="Preview" style="max-width: 100%; max-height: 200px; border-radius: 8px; border: 1px solid rgba(255,255,255,0.1);" />
+              <button id="lateChangesRemoveImageBtn" type="button" class="secondary-btn" style="margin-top: 8px; width: 100%;">Remove Image</button>
+            </div>
+          </label>
 
-          <div class="button-row">
-            <button id="saveApiKeyBtn" class="primary-btn" type="button">Save Key</button>
-            <button id="clearApiKeyBtn" class="secondary-btn" type="button">Clear Key</button>
-          </div>
+          <p class="classic-support-copy">Electron shell running locally on your Mac.</p>
+        </div>
+      </section>
 
-          <div class="button-row" style="margin-top: 8px;">
-            <button id="clearAllDataBtn" class="secondary-btn" type="button" style="background: rgba(255, 100, 100, 0.1); border-color: rgba(255, 100, 100, 0.3); color: #ff8888;">Clear All My Data</button>
-          </div>
+      <section class="panel preview-card">
+        <div class="card-header">
+          <h2>Schedule Preview</h2>
+        </div>
 
-          <p id="apiKeyStatus" class="field-helper" style="margin-top: 8px;">Using shared pool</p>
+        <div id="preview" class="preview-shell">
+          <div class="timeline-empty">
+            <div class="timeline-empty-icon">!</div>
+            <strong>Your night timeline will appear here.</strong>
+            <p>Add your plan for tonight and LuxShift will turn it into a visual sequence of blocks.</p>
+          </div>
         </div>
       </section>
     </aside>
@@ -1032,7 +1122,7 @@
             <button id="lateChangesImageUploadBtn" type="button" class="secondary-btn" style="width: 100%;">Choose Image</button>
             <div id="lateChangesImagePreview" style="display: none; margin-top: 8px;">
               <img id="lateChangesImagePreviewImg" src="" alt="Preview" style="max-width: 100%; max-height: 200px; border-radius: 8px; border: 1px solid rgba(255,255,255,0.1);" />
-              <button id="lateChangesRemoveImageBtn" type="button" class="secondary-btn" style="margin-top: 8px; width: 100%;">Remove Image</button>
+              <button id="lateChangesRemoveImageBtn" type="button" style="margin-top: 8px; width: 100%;">Remove Image</button>
             </div>
           </label>
 
@@ -1054,8 +1144,8 @@
         </div>
       </section>
     </main>
-  </div>
 
-  <script src="./renderer.js"></script>
-</body>
+    <script src="./renderer.js"></script>
+  </body>
+</html>
 </html>

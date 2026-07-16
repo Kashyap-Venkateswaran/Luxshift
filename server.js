@@ -3,17 +3,16 @@ const cors = require('cors');
 
 const app = express();
 
+const PORT = Number(process.env.PORT || 8787);
+
 app.use(cors());
 app.use(express.json({ limit: '10mb' }));
-
-const PORT = Number(process.env.PORT || 8787);
 
 // Provider configurations from env vars
 function parseKeyPool(envVar) {
   if (!envVar) return [];
   return envVar.split(',').map(k => k.trim()).filter(Boolean);
 }
-
 function parseAzurePool(envVar) {
   if (!envVar) return [];
   try {
@@ -109,7 +108,11 @@ const PROVIDER_POOLS = {
   }
 };
 
-// Round-robin index per provider
+const allowedTypes = new Set([
+  'work', 'study', 'break', 'meal', 'sleep',
+  'exercise', 'personal', 'commute', 'other'
+]);
+
 const poolIndices = { groq: 0, groqVision: 0, gemini: 0, openai: 0, azure: 0, anthropic: 0 };
 const keyCooldowns = {}; // key -> timestamp when 429 cooldown ends
 
@@ -222,228 +225,6 @@ async function callProvider(provider, userKey, body) {
   throw lastError || new Error('All provider keys exhausted');
 }
 
-const allowedTypes = new Set([
-  'work', 'study', 'break', 'meal', 'sleep',
-  'exercise', 'personal', 'commute', 'other'
-]);
-
-function normalizeTime(value) {
-  if (typeof value !== 'string') return null;
-  const text = value.trim().toUpperCase();
-
-  const time24 = text.match(/^(\d{1,2}):(\d{2})$/);
-  if (time24) {
-    const hours = Number(time24[1]);
-    const minutes = Number(time24[2]);
-    if (hours >= 0 && hours <= 23 && minutes >= 0 && minutes <= 59) {
-      return `${String(hours).padStart(2, '0')}:${String(minutes).padStart(2, '0')}`;
-    }
-  }
-
-  const time12 = text.match(/^(\d{1,2})(?::(\d{2}))?\s*([AP]M)$/);
-  if (time12) {
-    let hours = Number(time12[1]);
-    const minutes = Number(time12[2] || '00');
-    const period = time12[3];
-    if (hours >= 1 && hours <= 12 && minutes >= 0 && minutes <= 59) {
-      if (period === 'AM' && hours === 12) hours = 0;
-      if (period === 'PM' && hours !== 12) hours += 12;
-      return `${String(hours).padStart(2, '0')}:${String(minutes).padStart(2, '0')}`;
-    }
-  }
-
-  return null;
-}
-
-function timeToMinutes(value) {
-  const time = normalizeTime(value);
-  if (!time) return null;
-  const [hours, minutes] = time.split(':').map(Number);
-  return hours * 60 + minutes;
-}
-
-function addMinutes(time, minutesToAdd) {
-  const start = timeToMinutes(time);
-  if (start === null) return null;
-  const total = (start + minutesToAdd) % 1440;
-  const hours = Math.floor(total / 60);
-  const minutes = total % 60;
-  return `${String(hours).padStart(2, '0')}:${String(minutes).padStart(2, '0')}`;
-}
-
-function defaultEndTime(start, type) {
-  const durations = {
-    work: 60, study: 60, break: 20, meal: 60,
-    sleep: 480, exercise: 60, personal: 60, commute: 30, other: 60
-  };
-  return addMinutes(start, durations[type] || 60);
-}
-
-function cleanJson(rawText) {
-  if (typeof rawText !== 'string') return null;
-  const text = rawText.trim()
-    .replace(/^```json\s*/i, '')
-    .replace(/^```\s*/i, '')
-    .replace(/\s*```$/i, '');
-  const firstBrace = text.indexOf('{');
-  const lastBrace = text.lastIndexOf('}');
-  if (firstBrace < 0 || lastBrace <= firstBrace) return null;
-  try {
-    return JSON.parse(text.slice(firstBrace, lastBrace + 1));
-  } catch (_) {
-    return null;
-  }
-}
-
-function normalizeSchedule(parsed) {
-  const rawBlocks = Array.isArray(parsed?.blocks) ? parsed.blocks : [];
-  const blocks = rawBlocks
-    .map((block) => {
-      const type = allowedTypes.has(block?.type) ? block.type : 'other';
-      const start = normalizeTime(block?.start);
-      const suppliedEnd = normalizeTime(block?.end);
-      return {
-        title: typeof block?.title === 'string' && block.title.trim()
-          ? block.title.trim().slice(0, 80) : 'Schedule block',
-        start,
-        end: suppliedEnd || defaultEndTime(start, type),
-        type,
-        note: typeof block?.note === 'string' && block.note.trim()
-          ? block.note.trim().slice(0, 180) : 'Parsed from your description.',
-        confidence: Number.isFinite(Number(block?.confidence))
-          ? Math.min(1, Math.max(0, Number(block.confidence))) : 0.85
-      };
-    })
-    .filter((block) => block.start || block.end)
-    .sort((a, b) => (timeToMinutes(a.start) ?? 9999) - (timeToMinutes(b.start) ?? 9999))
-    .slice(0, 6);
-
-  return {
-    summary: typeof parsed?.summary === 'string' && parsed.summary.trim()
-      ? parsed.summary.trim().slice(0, 160) : 'Structured schedule',
-    confidence: Number.isFinite(Number(parsed?.confidence))
-      ? Math.min(1, Math.max(0, Number(parsed.confidence))) : 0.85,
-    reasons: Array.isArray(parsed?.reasons)
-      ? parsed.reasons.filter((r) => typeof r === 'string' && r.trim())
-          .map((r) => r.trim().slice(0, 180)).slice(0, 4)
-      : [],
-    blocks
-  };
-}
-
-function buildTextPrompt() {
-  return `You are LuxShift's schedule parser. Return JSON only. No markdown. No explanation. No code fences. The response must begin with { and end with }.
-
-Use this exact shape:
-{
-  "summary": "short summary",
-  "confidence": 0.9,
-  "reasons": ["short assumption only when needed"],
-  "blocks": [
-    {
-      "title": "string",
-      "start": "HH:MM",
-      "end": "HH:MM",
-      "type": "work|study|break|meal|sleep|exercise|personal|commute|other",
-      "note": "short useful sentence",
-      "confidence": 0.9
-    }
-  ]
-}
-
-Rules:
-- Use 24-hour HH:MM format.
-- Return 3 to 6 blocks in chronological order.
-- Infer reasonable end times when necessary.
-- Do not use null values.`;
-}
-
-function buildVisionPrompt() {
-  return `You are LuxShift's schedule parser. Analyze the provided image(s) which may contain timetables, schedules, emails, messages, or screenshots of calendars. Extract structured schedule blocks.
-
-Return JSON only. No markdown. No explanation. No code fences. The response must begin with { and end with }.
-
-Use this exact shape:
-{
-  "summary": "short summary of what was found in the image",
-  "confidence": 0.9,
-  "reasons": ["short assumption only when needed"],
-  "blocks": [
-    {
-      "title": "string",
-      "start": "HH:MM",
-      "end": "HH:MM",
-      "type": "work|study|break|meal|sleep|exercise|personal|commute|other",
-      "note": "short useful sentence",
-      "confidence": 0.9
-    }
-  ]
-}
-
-Rules:
-- Use 24-hour HH:MM format.
-- Return 3 to 6 blocks in chronological order.
-- Infer reasonable end times when necessary.
-- Do not use null values.
-- Extract times from the image (look for clocks, timestamps, time ranges, calendar events).
-- Handle messy OCR text, crossed-out times, handwritten notes.
-- If the image contains multiple days, focus on the current/next day.
-- If it's a message/email asking to stay late, create a "work" block with the new end time.`;
-}
-
-async function askProvider(provider, userKey, text) {
-  const response = await callProvider(provider, userKey, {
-    model: PROVIDER_POOLS[provider]?.model,
-    messages: [
-      { role: 'system', content: buildTextPrompt() },
-      { role: 'user', content: text }
-    ],
-    temperature: 0,
-    max_tokens: 650
-  });
-
-  return response.data.choices?.[0]?.message?.content || '';
-}
-
-async function askVisionProvider(provider, userKey, images, textPrompt = '') {
-  const visionText = textPrompt || 'Extract schedule blocks from this image.';
-
-  let messages;
-  if (provider === 'gemini') {
-    const parts = [{ text: visionText }];
-    for (const img of images) {
-      parts.push({
-        inline_data: {
-          mime_type: img.mimeType || 'image/jpeg',
-          data: img.base64
-        }
-      });
-    }
-    messages = [{ role: 'user', parts }];
-  } else {
-    // OpenAI/Groq format
-    const content = [{ type: 'text', text: visionText }];
-    for (const img of images) {
-      content.push({
-        type: 'image_url',
-        image_url: {
-          url: `data:${img.mimeType || 'image/jpeg'};base64,${img.base64}`
-        }
-      });
-    }
-    messages = [{ role: 'user', content }];
-  }
-
-  const response = await callProvider(provider, userKey, {
-    model: PROVIDER_POOLS[provider]?.model,
-    messages,
-    temperature: 0,
-    max_tokens: 650
-  });
-
-  return response.data.choices?.[0]?.message?.content || '';
-}
-
 // Health check — also used as keep-alive ping
 app.get('/health', (_req, res) => {
   res.json({
@@ -517,18 +298,65 @@ app.post('/parse-schedule', async (req, res) => {
   }
 });
 
+// Calendar integration endpoints
+app.post('/calendar/connect', async (req, res) => {
+  const { providers } = req.body;
+  if (!providers || !Array.isArray(providers)) {
+    return res.status(400).json({ error: 'Providers must be an array.' });
+  }
+  // In a real implementation you would start OAuth flows here.
+  // For now we just acknowledge the request.
+  res.json({ success: true, connectedProviders: providers });
+});
+
+app.get('/calendar/events', async (req, res) => {
+  const { providers } = req.query;
+  if (!providers) {
+    return res.status(400).json({ error: 'Providers query param required.' });
+  }
+  // Mock event data for demonstration purposes
+  const mockEvents = {
+    google: [
+      {
+        summary: 'Team Sync',
+        start: '2024-09-30T10:00:00-04:00',
+        end: '2024-09-30T11:00:00-04:00',
+        type: 'work'
+      },
+      {
+        summary: 'Lunch Break',
+        start: '2024-09-30T12:30:00-04:00',
+        end: '2024-09-30T13:00:00-04:00',
+        type: 'break'
+      }
+    ],
+    apple: [
+      {
+        summary: 'Gym Session',
+        start: '2024-09-30T18:00:00-04:00',
+        end: '2024-09-30T19:00:00-04:00',
+        type: 'exercise'
+      }
+    ],
+    notion: [
+      {
+        summary: 'Project Planning',
+        start: '2024-10-01T09:00:00-04:00',
+        end: '2024-10-01T10:00:00-04:00',
+        type: 'work'
+      }
+    ]
+  };
+  const events = {};
+  for (const p of providers) {
+    if (mockEvents[p]) events[p] = mockEvents[p];
+  }
+  res.json(events);
+});
+
 app.listen(PORT, () => {
   console.log(`LuxShift proxy running at http://localhost:${PORT}`);
   console.log('Configured providers:', Object.entries(PROVIDER_POOLS)
     .filter(([, p]) => p.keys.length > 0)
     .map(([name, p]) => `${name} (${p.keys.length} keys)`).join(', ') || 'none');
 });
-
-// Keep-alive: ping self every 10 minutes to prevent Render free tier spin-down
-const SELF_URL = process.env.RENDER_EXTERNAL_URL || `http://localhost:${PORT}`;
-setInterval(async () => {
-  try {
-    await fetch(`${SELF_URL}/ping`);
-    console.log(`[keep-alive] pinged ${SELF_URL}/ping`);
-  } catch (_) {}
-}, 10 * 60 * 1000);
