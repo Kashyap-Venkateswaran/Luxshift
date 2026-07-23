@@ -106,5 +106,31 @@ contextBridge.exposeInMainWorld('luxshiftAPI', {
   getUserApiKey: () => ipcRenderer.invoke('luxshift:get-user-api-key'),
   saveUserApiKey: (key, provider) => ipcRenderer.invoke('luxshift:save-user-api-key', { key, provider }),
   deleteUserApiKey: () => ipcRenderer.invoke('luxshift:delete-user-api-key'),
-  clearAllUserData: () => ipcRenderer.invoke('luxshift:clear-all-user-data')
+  clearAllUserData: () => ipcRenderer.invoke('luxshift:clear-all-user-data'),
+
+  // Calendar Integration
+  calendar: {
+    google: {
+      getAuthUrl: () => ipcRenderer.invoke('luxshift:calendar:google:auth-url'),
+      connect: (code) => ipcRenderer.invoke('luxshift:calendar:google:connect', { code }),
+      listCalendars: (tokens) => ipcRenderer.invoke('luxshift:calendar:google:list-calendars', { tokens }),
+      fetchEvents: (tokens, calendarIds, startDate, endDate) =>
+        ipcRenderer.invoke('luxshift:calendar:google:fetch-events', { tokens, calendarIds, startDate, endDate })
+    },
+    apple: {
+      checkAccess: () => ipcRenderer.invoke('luxshift:calendar:apple:check-access'),
+      listCalendars: () => ipcRenderer.invoke('luxshift:calendar:apple:list-calendars'),
+      fetchEvents: (calendarNames, startDate, endDate) =>
+        ipcRenderer.invoke('luxshift:calendar:apple:fetch-events', { calendarNames, startDate, endDate })
+    },
+    notion: {
+      connect: (token, databaseId) => ipcRenderer.invoke('luxshift:calendar:notion:connect', { token, databaseId }),
+      fetchEvents: (token, databaseId, startDate, endDate) =>
+        ipcRenderer.invoke('luxshift:calendar:notion:fetch-events', { token, databaseId, startDate, endDate })
+    },
+    ics: {
+      parse: (content, startDate, endDate) =>
+        ipcRenderer.invoke('luxshift:calendar:ics:parse', { content, startDate, endDate })
+    }
+  }
 });

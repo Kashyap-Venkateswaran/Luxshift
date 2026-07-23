@@ -911,6 +911,7 @@
           <div id="locationResults" class="location-results"></div>
           <div id="settingsSummary" class="settings-summary"></div>
         </div>
+      </section>
 
         <section class="settings-card">
           <div class="settings-header">
@@ -990,74 +991,6 @@
           </div>
         </section>
 
-      </section>
-
-      <section class="settings-card">
-        <div class="settings-header">
-          <h2>Schedule Input</h2>
-          <div class="button-row button-row-classic">
-            <button id="parseBtn" class="primary-btn" type="button">Parse My Day</button>
-            <button id="fillBtn" class="secondary-btn" type="button">Insert Example</button>
-            <button id="clearBtn" class="secondary-btn" type="button">Clear</button>
-          </div>
-        </div>
-
-        <div class="input-stack">
-          <label>
-            Tonight’s Plan
-            <textarea
-              id="input"
-              class="schedule-textarea"
-              placeholder="Describe tonight’s schedule, work blocks, calls, meals, downtime, and your intended sleep or wake times."
-            ></textarea>
-          </label>
-
-          <label>
-            Late Changes
-            <textarea
-              id="lateChangesInput"
-              class="schedule-textarea late-changes"
-              placeholder="Add last-minute updates here, like delays, rescheduled calls, or a later bedtime."
-            ></textarea>
-          </label>
-
-          <label>
-            Upload Image (timetable, calendar screenshot, message, email)
-            <input id="imageUpload" type="file" accept="image/*" style="display: none;" />
-            <button id="imageUploadBtn" type="button" class="secondary-btn" style="width: 100%;">Choose Image</button>
-            <div id="imagePreview" style="display: none; margin-top: 8px;">
-              <img id="imagePreviewImg" src="" alt="Preview" style="max-width: 100%; max-height: 200px; border-radius: 8px; border: 1px solid rgba(255,255,255,0.1);" />
-              <button id="removeImageBtn" type="button" class="secondary-btn" style="margin-top: 8px; width: 100%;">Remove Image</button>
-            </div>
-          </label>
-
-          <label>
-            Upload Image (timetable, calendar screenshot, message, email)
-            <input id="lateChangesImageUpload" type="file" accept="image/*" style="display: none;" />
-            <button id="lateChangesImageUploadBtn" type="button" class="secondary-btn" style="width: 100%;">Choose Image</button>
-            <div id="lateChangesImagePreview" style="display: none; margin-top: 8px;">
-              <img id="lateChangesImagePreviewImg" src="" alt="Preview" style="max-width: 100%; max-height: 200px; border-radius: 8px; border: 1px solid rgba(255,255,255,0.1);" />
-              <button id="lateChangesRemoveImageBtn" type="button" class="secondary-btn" style="margin-top: 8px; width: 100%;">Remove Image</button>
-            </div>
-          </label>
-
-          <p class="classic-support-copy">Electron shell running locally on your Mac.</p>
-        </div>
-      </section>
-
-      <section class="panel preview-card">
-        <div class="card-header">
-          <h2>Schedule Preview</h2>
-        </div>
-
-        <div id="preview" class="preview-shell">
-          <div class="timeline-empty">
-            <div class="timeline-empty-icon">!</div>
-            <strong>Your night timeline will appear here.</strong>
-            <p>Add your plan for tonight and LuxShift will turn it into a visual sequence of blocks.</p>
-          </div>
-        </div>
-      </section>
     </aside>
 
     <main class="main">
@@ -1108,7 +1041,7 @@
 
           <label>
             Upload Image (timetable, calendar screenshot, message, email)
-            <input id="imageUpload" type="file" accept="image/*" style="display: none;" />
+            <input id="imageUpload" type="file" accept="image/png,image/jpeg,image/webp,image/heic" style="display: none;" />
             <button id="imageUploadBtn" type="button" class="secondary-btn" style="width: 100%;">Choose Image</button>
             <div id="imagePreview" style="display: none; margin-top: 8px;">
               <img id="imagePreviewImg" src="" alt="Preview" style="max-width: 100%; max-height: 200px; border-radius: 8px; border: 1px solid rgba(255,255,255,0.1);" />
@@ -1118,7 +1051,7 @@
 
           <label>
             Upload Image (timetable, calendar screenshot, message, email)
-            <input id="lateChangesImageUpload" type="file" accept="image/*" style="display: none;" />
+            <input id="lateChangesImageUpload" type="file" accept="image/png,image/jpeg,image/webp,image/heic" style="display: none;" />
             <button id="lateChangesImageUploadBtn" type="button" class="secondary-btn" style="width: 100%;">Choose Image</button>
             <div id="lateChangesImagePreview" style="display: none; margin-top: 8px;">
               <img id="lateChangesImagePreviewImg" src="" alt="Preview" style="max-width: 100%; max-height: 200px; border-radius: 8px; border: 1px solid rgba(255,255,255,0.1);" />
@@ -1147,5 +1080,4 @@
 
     <script src="./renderer.js"></script>
   </body>
-</html>
 </html>

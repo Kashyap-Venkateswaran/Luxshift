@@ -11,16 +11,19 @@
   "scripts": {
     "start": "electron .",
     "pack": "electron-builder --dir --mac --universal",
-    "dist": "electron-builder --mac --universal && node scripts/organize-build.js"
+    "dist": "electron-builder --mac --universal && node organize-build.js"
   },
   "devDependencies": {
     "electron": "^43.1.1",
     "electron-builder": "^26.15.3"
   },
   "dependencies": {
+    "@notionhq/client": "^2.3.0",
     "cors": "^2.8.6",
     "electron-store": "^8.1.0",
     "express": "^5.2.1",
+    "googleapis": "^144.0.0",
+    "ical.js": "^1.5.0",
     "suncalc": "^1.9.0"
   },
   "build": {
@@ -37,8 +40,9 @@
       "!.github/**",
       "!.gitignore",
       "!README.md",
-      "preload.js",
-      "assets/nightshift-control"
+      "!*.swift",
+      "!nvidia_env.rtf",
+      "!scripts/**"
     ],
     "mac": {
       "category": "public.app-category.healthcare-fitness",
@@ -47,6 +51,20 @@
         "dmg",
         "zip"
       ]
-    }
+    },
+    "extraResources": [
+      {
+        "from": "assets/nightshift-control",
+        "to": "assets/nightshift-control"
+      },
+      {
+        "from": "assets/brightness-control",
+        "to": "assets/brightness-control"
+      }
+    ],
+    "asarUnpack": [
+      "assets/nightshift-control",
+      "assets/brightness-control"
+    ]
   }
 }

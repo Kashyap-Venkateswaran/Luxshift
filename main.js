@@ -31,8 +31,14 @@ const {
   getUserApiKey,
   saveUserApiKey,
   deleteUserApiKey,
+  clearAllUserData,
   dateKeyFromDate
 } = require('./schedule-store.js');
+
+const { GoogleCalendarClient } = require('./calendar/google.js');
+const { AppleCalendarClient } = require('./calendar/apple.js');
+const { NotionCalendarClient } = require('./calendar/notion.js');
+const { parseICS } = require('./calendar/ics.js');
 
 const GITHUB_REPO = 'LuxshiftOfficial/Luxshift';
 
@@ -649,7 +655,8 @@ function runWindDownTick() {
 }
 
 function startWindDownTick() {
-  runWindDownTick(); // immediate first run
+  // Don't run immediately - Night Shift is already turned OFF at startup (line 690).
+  // The first interval tick will compute the correct wind-down state and apply Night Shift only if intensity > 0.
   windDownTickInterval = setInterval(runWindDownTick, 60 * 1000);
 }
 
@@ -888,6 +895,73 @@ ipcMain.handle('luxshift:delete-user-api-key', async () => {
 ipcMain.handle('luxshift:clear-all-user-data', async () => {
   const result = clearAllUserData();
   return result;
+});
+
+// ---- Calendar Integration IPC ----
+
+// Google Calendar
+ipcMain.handle('luxshift:calendar:google:auth-url', async () => {
+  const client = new GoogleCalendarClient();
+  return client.getAuthUrl();
+});
+
+ipcMain.handle('luxshift:calendar:google:connect', async (_event, { code }) => {
+  const client = new GoogleCalendarClient();
+  const tokens = await client.getTokens(code);
+  return { ok: true, tokens };
+});
+
+ipcMain.handle('luxshift:calendar:google:list-calendars', async (_event, { tokens }) => {
+  const client = new GoogleCalendarClient();
+  await client.initialize(tokens);
+  const calendars = await client.listCalendars();
+  return { ok: true, calendars };
+});
+
+ipcMain.handle('luxshift:calendar:google:fetch-events', async (_event, { tokens, calendarIds, startDate, endDate }) => {
+  const client = new GoogleCalendarClient();
+  await client.initialize(tokens);
+  const events = await client.getEvents(calendarIds, new Date(startDate), new Date(endDate));
+  return { ok: true, events };
+});
+
+// Apple Calendar
+ipcMain.handle('luxshift:calendar:apple:check-access', async () => {
+  const client = new AppleCalendarClient();
+  const hasAccess = await client.checkAccess();
+  return { ok: true, hasAccess };
+});
+
+ipcMain.handle('luxshift:calendar:apple:list-calendars', async () => {
+  const client = new AppleCalendarClient();
+  const calendars = await client.listCalendars();
+  return { ok: true, calendars };
+});
+
+ipcMain.handle('luxshift:calendar:apple:fetch-events', async (_event, { calendarNames, startDate, endDate }) => {
+  const client = new AppleCalendarClient();
+  const events = await client.getEvents(calendarNames, new Date(startDate), new Date(endDate));
+  return { ok: true, events };
+});
+
+// Notion
+ipcMain.handle('luxshift:calendar:notion:connect', async (_event, { token, databaseId }) => {
+  const client = new NotionCalendarClient();
+  const ok = await client.initialize(token, databaseId);
+  return { ok };
+});
+
+ipcMain.handle('luxshift:calendar:notion:fetch-events', async (_event, { token, databaseId, startDate, endDate }) => {
+  const client = new NotionCalendarClient();
+  await client.initialize(token, databaseId);
+  const events = await client.getEvents(new Date(startDate), new Date(endDate));
+  return { ok: true, events };
+});
+
+// ICS file import
+ipcMain.handle('luxshift:calendar:ics:parse', async (_event, { content, startDate, endDate }) => {
+  const events = parseICS(content, startDate ? new Date(startDate) : null, endDate ? new Date(endDate) : null);
+  return { ok: true, events };
 });
 
 // ---- Update check helper ----
