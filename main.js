@@ -39,6 +39,7 @@ const { GoogleCalendarClient } = require('./calendar/google.js');
 const { AppleCalendarClient } = require('./calendar/apple.js');
 const { NotionCalendarClient } = require('./calendar/notion.js');
 const { parseICS } = require('./calendar/ics.js');
+const { KeepAlivePinger } = require('./keep-alive.js');
 
 const GITHUB_REPO = 'LuxshiftOfficial/Luxshift';
 
@@ -47,6 +48,7 @@ let mainWindow = null;
 let tray = null;
 let isQuitting = false;
 let windDownTickInterval = null;
+let keepAlivePinger = null;
 
 // ---- Swift NightShift binary ----
 function getNightshiftBin() {
@@ -702,6 +704,10 @@ app.whenReady().then(async () => {
   // Create tray UI
   createTray();
 
+  // Start keep-alive pinger for Render free tier
+  keepAlivePinger = new KeepAlivePinger();
+  keepAlivePinger.start();
+
   // Background update check
   checkForUpdates(false).catch(() => {});
 
@@ -712,6 +718,8 @@ app.whenReady().then(async () => {
 app.on('before-quit', () => {
   isQuitting = true;
   stopWindDownTick();
+  // Stop keep-alive pinger
+  if (keepAlivePinger) keepAlivePinger.stop();
 });
 
 app.on('window-all-closed', (event) => {

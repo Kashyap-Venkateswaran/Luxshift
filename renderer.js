@@ -78,7 +78,9 @@ async function parseScheduleViaProxy(text, images = []) {
     body.images = images;
   }
 
-  const response = await fetch('https://luxshift.onrender.com/parse-schedule', {
+  const apiUrl = window.LUXSHIFT_CONFIG?.PARSE_SCHEDULE_URL || 'https://luxshift-api.onrender.com/parse-schedule';
+
+  const response = await fetch(apiUrl, {
     method: 'POST',
     headers,
     body: JSON.stringify(body)
@@ -603,14 +605,15 @@ if (googleCalendarChk && appleCalendarChk && notionChk && connectCalendarBtn && 
     }
     calendarStatus.textContent = 'Connecting…';
     try {
-      const resp = await fetch(`https://luxshift.onrender.com/calendar/connect`, {
+      const apiBase = window.LUXSHIFT_CONFIG?.API_BASE_URL || 'https://luxshift-api.onrender.com';
+      const resp = await fetch(`${apiBase}/calendar/connect`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ providers: selected })
       });
       if (!resp.ok) throw new Error('Connection failed');
       calendarStatus.textContent = 'Connected! Fetching events…';
-      const eventsResp = await fetch(`https://luxshift.onrender.com/calendar/events?providers=${selected.join(',')}`);
+      const eventsResp = await fetch(`${apiBase}/calendar/events?providers=${selected.join(',')}`);
       if (eventsResp.ok) {
         const events = await eventsResp.json();
         console.log('Fetched events:', events);
