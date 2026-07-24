@@ -65,8 +65,11 @@ bootstrap();
 
 async function parseScheduleViaProxy(text, images = []) {
   const headers = { 'Content-Type': 'application/json' };
-  if (userApiKey) {
+  // Always send the provider header if set, even if no user key
+  if (userApiProvider) {
     headers['x-user-provider'] = userApiProvider;
+  }
+  if (userApiKey) {
     headers['x-user-api-key'] = userApiKey;
   }
 

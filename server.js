@@ -225,6 +225,129 @@ async function callProvider(provider, userKey, body) {
   throw lastError || new Error('All provider keys exhausted');
 }
 
+// ============================================================
+// Vision & Text Provider Helpers
+// ============================================================
+
+function cleanJson(text) {
+  if (!text) return null;
+  const cleaned = text
+    .replace(/```json\s*/gi, '')
+    .replace(/```\s*/g, '')
+    .trim();
+  try {
+    return JSON.parse(cleaned);
+  } catch {
+    return null;
+  }
+}
+
+function normalizeSchedule(parsed) {
+  if (!parsed) return { summary: '', confidence: 0, reasons: [], blocks: [] };
+
+  const blocks = Array.isArray(parsed.blocks) ? parsed.blocks.map((block, index) => ({
+    id: block.id || `block_${index + 1}`,
+    type: allowedTypes.has(block.type) ? block.type : 'general',
+    title: block.title || 'Schedule Block',
+    note: block.note || 'Parsed from your day description.',
+    timeLabel: block.timeLabel || 'Unspecified',
+    start: /^\d{2}:\d{2}$/.test(block.start) ? block.start : null,
+    end: /^\d{2}:\d{2}$/.test(block.end) ? block.end : null,
+    certainty: Math.max(0, Math.min(1, Number(block.certainty) || 0.7))
+  })) : [];
+
+  return {
+    summary: parsed.summary || '',
+    confidence: Math.max(0, Math.min(1, Number(parsed.confidence) || (blocks.length ? 0.72 : 0.18))),
+    reasons: Array.isArray(parsed.reasons) ? parsed.reasons.filter(r => typeof r === 'string').slice(0, 8) : [],
+    blocks
+  };
+}
+
+async function askProvider(provider, userKey, text) {
+  // Build the prompt for text-only parsing
+  const systemPrompt = `You are LuxShift, an AI parser for night schedule planning. Convert a user's natural-language day or night description into structured schedule blocks. If the input is only a preference, opinion, identity statement, or generic interest, return empty blocks. If the input contains a planned activity, intended action, time reference, or clear day-plan context, return blocks. Respond ONLY with a valid JSON object — no markdown, no code fences, no explanation. Use this exact structure:
+{
+  "summary": "short summary of the plan",
+  "confidence": 0.85,
+  "reasons": ["reason one", "reason two"],
+  "blocks": [
+    {
+      "id": "block_1",
+      "type": "work",
+      "title": "Block title",
+      "note": "Short note",
+      "timeLabel": "10 PM – 1 AM",
+      "start": "22:00",
+      "end": "01:00",
+      "certainty": 0.9
+    }
+  ]
+}
+Types allowed: work, unwind, leisure, sleep, wake, break, general. Use 24-hour HH:MM for start/end, or null if unknown. Confidence and certainty are numbers 0–1.`;
+
+  const body = {
+    messages: [
+      { role: 'system', content: systemPrompt },
+      { role: 'user', content: text }
+    ],
+    temperature: 0.1,
+    max_tokens: 1500
+  };
+
+  const result = await callProvider(provider, userKey, body);
+  return result.data;
+}
+
+async function askVisionProvider(provider, userKey, images) {
+  // Build the prompt for vision parsing
+  const systemPrompt = `You are LuxShift, an AI parser for night schedule planning. Analyze the provided image(s) which may contain a timetable, calendar screenshot, message, email, or handwritten schedule. Extract any schedule information and convert it into structured schedule blocks. Respond ONLY with a valid JSON object — no markdown, no code fences, no explanation. Use this exact structure:
+{
+  "summary": "short summary of the plan",
+  "confidence": 0.85,
+  "reasons": ["reason one", "reason two"],
+  "blocks": [
+    {
+      "id": "block_1",
+      "type": "work",
+      "title": "Block title",
+      "note": "Short note",
+      "timeLabel": "10 PM – 1 AM",
+      "start": "22:00",
+      "end": "01:00",
+      "certainty": 0.9
+    }
+  ]
+}
+Types allowed: work, unwind, leisure, sleep, wake, break, general. Use 24-hour HH:MM for start/end, or null if unknown. Confidence and certainty are numbers 0–1.`;
+
+  // Format images for the provider
+  const imageParts = images.map(img => {
+    if (provider === 'gemini') {
+      return { inline_data: { mime_type: img.mimeType, data: img.base64 } };
+    }
+    // OpenAI/Groq/Azure format
+    return { type: 'image_url', image_url: { url: `data:${img.mimeType};base64,${img.base64}` } };
+  });
+
+  const userContent = [
+    { type: 'text', text: 'Extract schedule information from these image(s).' },
+    ...imageParts
+  ];
+
+  const body = {
+    messages: [
+      { role: 'system', content: systemPrompt },
+      { role: 'user', content: userContent }
+    ],
+    temperature: 0.1,
+    max_tokens: 1500
+  };
+
+  const result = await callProvider(provider, userKey, body);
+  return result.data;
+}
+
 // Health check — also used as keep-alive ping
 app.get('/health', (_req, res) => {
   res.json({
@@ -255,19 +378,26 @@ app.post('/parse-schedule', async (req, res) => {
     let rawResponse;
     let keySource = 'pool';
 
-    if (images.length > 0) {
-      // Vision parsing
-      const visionProviders = ['gemini', 'groqVision', 'openai', 'azure'];
-      const visionProvider = visionProviders.includes(userProvider) ? userProvider : 'gemini';
+    // Smart model selection: auto-detect if vision is needed
+    const needsVision = images.length > 0;
+    let effectiveProvider = userProvider;
 
-      if (!PROVIDER_POOLS[visionProvider]?.supportsVision) {
-        return res.status(400).json({ error: `Provider ${visionProvider} does not support vision.` });
+    if (needsVision) {
+      // Vision parsing - select a vision-capable provider
+      const visionProviders = ['gemini', 'groqVision', 'openai', 'azure', 'anthropic'];
+      effectiveProvider = visionProviders.includes(userProvider) ? userProvider : 'gemini';
+
+      if (!PROVIDER_POOLS[effectiveProvider]?.supportsVision) {
+        return res.status(400).json({ error: `Provider ${effectiveProvider} does not support vision.` });
       }
 
-      rawResponse = await askVisionProvider(visionProvider, userKey, images);
+      rawResponse = await askVisionProvider(effectiveProvider, userKey, images);
     } else {
-      // Text parsing
-      rawResponse = await askProvider(userProvider, userKey, text);
+      // Text parsing - use the requested provider (or default to groq)
+      const textProviders = ['groq', 'gemini', 'openai', 'azure', 'anthropic'];
+      effectiveProvider = textProviders.includes(userProvider) ? userProvider : 'groq';
+
+      rawResponse = await askProvider(effectiveProvider, userKey, text);
     }
 
     // For key source, we infer from whether user provided key
