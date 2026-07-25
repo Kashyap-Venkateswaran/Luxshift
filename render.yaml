@@ -1,0 +1,21 @@
+services:
+  - type: web
+    name: luxshift-api
+    runtime: node
+    plan: free
+    buildCommand: npm install
+    startCommand: npm run server
+    healthCheckPath: /health
+    envVars:
+      - key: NODE_ENV
+        value: production
+      - key: GROQ_API_KEYS
+        sync: false
+      - key: GEMINI_API_KEYS
+        sync: false
+      - key: OPENAI_API_KEYS
+        sync: false
+      - key: AZURE_OPENAI_CONFIG
+        sync: false
+      - key: ANTHROPIC_API_KEYS
+        sync: false

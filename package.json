@@ -10,6 +10,7 @@
   },
   "scripts": {
     "start": "electron .",
+    "server": "node server.js",
     "pack": "electron-builder --dir --mac --universal",
     "dist": "electron-builder --mac --universal && node organize-build.js"
   },
