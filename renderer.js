@@ -586,6 +586,174 @@ function wireUI() {
   }
 }
 
+// ---------- Smart Bulb Integration UI ----------
+const smartBulbEnabledChk = document.getElementById('smartBulbEnabledChk');
+const smartBulbProtocolSelect = document.getElementById('smartBulbProtocolSelect');
+const discoverBulbsBtn = document.getElementById('discoverBulbsBtn');
+const refreshBulbsBtn = document.getElementById('refreshBulbsBtn');
+const bulbList = document.getElementById('bulbList');
+const smartBulbStatus = document.getElementById('smartBulbStatus');
+
+async function loadSmartBulbProtocols() {
+  if (!window.luxshiftAPI?.smartBulb?.getProtocols) return;
+  try {
+    const result = await window.luxshiftAPI.smartBulb.getProtocols();
+    if (result?.ok && smartBulbProtocolSelect) {
+      smartBulbProtocolSelect.innerHTML = '<option value="">Select a protocol</option>';
+      result.protocols.forEach(p => {
+        const opt = document.createElement('option');
+        opt.value = p.id;
+        opt.textContent = `${p.name}${p.requiresBridge ? ' (requires bridge)' : ''}`;
+        smartBulbProtocolSelect.appendChild(opt);
+      });
+    }
+  } catch (e) {
+    console.error('Failed to load protocols:', e);
+  }
+}
+
+async function refreshBulbList() {
+  if (!window.luxshiftAPI?.smartBulb?.getBulbs || !bulbList) return;
+  try {
+    const result = await window.luxshiftAPI.smartBulb.getBulbs();
+    if (result?.ok) {
+      renderBulbList(result.bulbs);
+    }
+  } catch (e) {
+    console.error('Failed to refresh bulbs:', e);
+  }
+}
+
+function renderBulbList(bulbs) {
+  if (!bulbList) return;
+  if (!bulbs.length) {
+    bulbList.innerHTML = '<p style="color:var(--muted);font-size:0.85rem">No bulbs found. Click Discover to scan.</p>';
+    return;
+  }
+  bulbList.innerHTML = bulbs.map(bulb => `
+    <div style="display:flex;align-items:center;justify-content:space-between;padding:8px 10px;background:rgba(255,255,255,0.04);border:1px solid rgba(255,255,255,0.06);border-radius:8px;margin-bottom:6px;">
+      <div style="display:flex;align-items:center;gap:10px;">
+        <span style="width:10px;height:10px;border-radius:50%;background:${bulb.connected ? '#68d391' : '#fc8181'}"></span>
+        <div>
+          <div style="font-weight:600;font-size:0.9rem">${escapeHtml(bulb.name)}</div>
+          <div style="font-size:0.75rem;color:var(--muted)">${escapeHtml(bulb.type?.toUpperCase() || bulb.protocol)} • ${bulb.connected ? 'Connected' : 'Disconnected'}</div>
+        </div>
+      </div>
+      <div style="display:flex;gap:6px;">
+        <button type="button" class="secondary-btn" data-bulb-id="${escapeHtml(bulb.id)}" data-action="on" style="padding:6px 10px;font-size:0.8rem">On</button>
+        <button type="button" class="secondary-btn" data-bulb-id="${escapeHtml(bulb.id)}" data-action="off" style="padding:6px 10px;font-size:0.8rem">Off</button>
+      </div>
+    </div>
+  `).join('');
+
+  // Add event listeners for bulb control buttons
+  bulbList.querySelectorAll('button[data-bulb-id]').forEach(btn => {
+    btn.addEventListener('click', async () => {
+      const bulbId = btn.dataset.bulbId;
+      const action = btn.dataset.action;
+      if (!window.luxshiftAPI?.smartBulb?.control) return;
+      try {
+        await window.luxshiftAPI.smartBulb.control(bulbId, action);
+        refreshBulbList();
+      } catch (e) {
+        smartBulbStatus.textContent = `Error: ${e.message}`;
+      }
+    });
+  });
+}
+
+if (smartBulbEnabledChk && smartBulbProtocolSelect && discoverBulbsBtn && refreshBulbsBtn && smartBulbStatus) {
+  // Load protocols on startup
+  loadSmartBulbProtocols();
+
+  // Load current status
+  window.luxshiftAPI?.smartBulb?.getStatus?.().then(result => {
+    if (result?.ok) {
+      smartBulbEnabledChk.checked = result.enabled;
+      smartBulbProtocolSelect.value = result.protocol || '';
+      smartBulbProtocolSelect.disabled = !result.enabled;
+      discoverBulbsBtn.disabled = !result.enabled;
+      refreshBulbsBtn.disabled = !result.enabled;
+      if (result.enabled) {
+        refreshBulbList();
+      }
+    }
+  }).catch(() => {});
+
+  // Enable checkbox
+  smartBulbEnabledChk.addEventListener('change', async () => {
+    const enabled = smartBulbEnabledChk.checked;
+    smartBulbProtocolSelect.disabled = !enabled;
+    discoverBulbsBtn.disabled = !enabled;
+    refreshBulbsBtn.disabled = !enabled;
+    bulbList.innerHTML = '';
+    try {
+      const result = await window.luxshiftAPI.smartBulb.enable(enabled);
+      if (result?.ok) {
+        smartBulbStatus.textContent = enabled ? 'Smart bulbs enabled. Select protocol and discover.' : 'Smart bulbs disabled.';
+        if (enabled) loadSmartBulbProtocols();
+      } else {
+        smartBulbEnabledChk.checked = !enabled; // Revert on error
+        smartBulbStatus.textContent = `Error: ${result?.error}`;
+      }
+    } catch (e) {
+      smartBulbEnabledChk.checked = !enabled;
+      smartBulbStatus.textContent = `Error: ${e.message}`;
+    }
+  });
+
+  // Protocol select
+  smartBulbProtocolSelect.addEventListener('change', async () => {
+    const protocol = smartBulbProtocolSelect.value;
+    if (!protocol) return;
+    smartBulbStatus.textContent = `Setting protocol to ${protocol}...`;
+    try {
+      const result = await window.luxshiftAPI.smartBulb.setProtocol(protocol);
+      if (result?.ok) {
+        smartBulbStatus.textContent = `Protocol set. Click Discover to find bulbs.`;
+      } else {
+        smartBulbStatus.textContent = `Error: ${result?.error}`;
+      }
+    } catch (e) {
+      smartBulbStatus.textContent = `Error: ${e.message}`;
+    }
+  });
+
+  // Discover bulbs
+  discoverBulbsBtn.addEventListener('click', async () => {
+    discoverBulbsBtn.disabled = true;
+    discoverBulbsBtn.textContent = 'Discovering...';
+    smartBulbStatus.textContent = 'Scanning network for bulbs...';
+    bulbList.innerHTML = '<p style="color:var(--muted);font-size:0.85rem">Scanning...</p>';
+    try {
+      const protocol = smartBulbProtocolSelect.value;
+      const result = await window.luxshiftAPI.smartBulb.discover(protocol || undefined);
+      if (result?.ok) {
+        smartBulbStatus.textContent = protocol
+          ? `Found ${result.bulbs?.length || 0} bulb(s).`
+          : `Scan complete.`;
+        await refreshBulbList();
+      } else {
+        smartBulbStatus.textContent = `Error: ${result?.error}`;
+      }
+    } catch (e) {
+      smartBulbStatus.textContent = `Error: ${e.message}`;
+    } finally {
+      discoverBulbsBtn.disabled = false;
+      discoverBulbsBtn.textContent = 'Discover Bulbs';
+    }
+  });
+
+  // Refresh bulbs
+  refreshBulbsBtn.addEventListener('click', async () => {
+    refreshBulbsBtn.disabled = true;
+    refreshBulbsBtn.textContent = 'Refreshing...';
+    await refreshBulbList();
+    refreshBulbsBtn.disabled = false;
+    refreshBulbsBtn.textContent = 'Refresh';
+  });
+}
+
 // ---------- Calendar Integration UI ----------
 const googleCalendarChk = document.getElementById('googleCalendarChk');
 const appleCalendarChk = document.getElementById('appleCalendarChk');

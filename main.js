@@ -40,6 +40,7 @@ const { AppleCalendarClient } = require('./calendar/apple.js');
 const { NotionCalendarClient } = require('./calendar/notion.js');
 const { parseICS } = require('./calendar/ics.js');
 const { KeepAlivePinger } = require('./keep-alive.js');
+const { SmartBulbManager } = require('./smart-bulb.js');
 
 const GITHUB_REPO = 'LuxshiftOfficial/Luxshift';
 
@@ -49,6 +50,7 @@ let tray = null;
 let isQuitting = false;
 let windDownTickInterval = null;
 let keepAlivePinger = null;
+let smartBulbManager = null;
 
 // ---- Swift NightShift binary ----
 function getNightshiftBin() {
@@ -652,6 +654,11 @@ function runWindDownTick() {
   pushStateToRenderer(state);
   applyDisplayAdaptation(state.intensity);
 
+  // Smart bulb integration - apply wind-down state to bulbs
+  if (smartBulbManager?.enabled && smartBulbManager?.activeController) {
+    smartBulbManager.onWindDownTick(state).catch(() => {});
+  }
+
   // Sunlight notifications (async — fetches weather)
   checkSunlightNotifications(prefs, schedule);
 }
@@ -689,6 +696,9 @@ app.whenReady().then(async () => {
     defaults: DEFAULT_PREFERENCES
   });
 
+  // Initialize smart bulb manager
+  smartBulbManager = new SmartBulbManager(preferencesStore);
+
   // Archive any expired schedule first
   archiveExpiredActiveSchedule();
 
@@ -697,6 +707,12 @@ app.whenReady().then(async () => {
 
   // Ensure Night Shift is OFF at startup (safety)
   await applyNightShift(0);
+
+  // Initialize smart bulbs if enabled - set active controller from saved config
+  if (smartBulbManager.enabled && smartBulbManager.activeControllerType) {
+    await smartBulbManager.setProtocol(smartBulbManager.activeControllerType);
+    await smartBulbManager.enable(true);
+  }
 
   // Start wind-down tick (includes sunlight notifications)
   startWindDownTick();
@@ -715,11 +731,15 @@ app.whenReady().then(async () => {
   app.on('activate', showMainWindow);
 });
 
-app.on('before-quit', () => {
+app.on('before-quit', async () => {
   isQuitting = true;
   stopWindDownTick();
   // Stop keep-alive pinger
   if (keepAlivePinger) keepAlivePinger.stop();
+  // Restore smart bulbs to normal
+  if (smartBulbManager?.activeController) {
+    await smartBulbManager.activeController.restoreNormal();
+  }
 });
 
 app.on('window-all-closed', (event) => {
@@ -970,6 +990,73 @@ ipcMain.handle('luxshift:calendar:notion:fetch-events', async (_event, { token, 
 ipcMain.handle('luxshift:calendar:ics:parse', async (_event, { content, startDate, endDate }) => {
   const events = parseICS(content, startDate ? new Date(startDate) : null, endDate ? new Date(endDate) : null);
   return { ok: true, events };
+});
+
+// ---- Smart Bulb Integration IPC ----
+
+ipcMain.handle('luxshift:smartbulb:get-protocols', async () => {
+  if (!smartBulbManager) return { ok: false, error: 'Smart bulb manager not initialized' };
+  return { ok: true, protocols: smartBulbManager.getAvailableProtocols() };
+});
+
+ipcMain.handle('luxshift:smartbulb:discover', async (_event, { protocol }) => {
+  if (!smartBulbManager) return { ok: false, error: 'Smart bulb manager not initialized' };
+  try {
+    if (protocol) {
+      const controller = smartBulbManager.controllers[protocol];
+      if (!controller) return { ok: false, error: `Unknown protocol: ${protocol}` };
+      const bulbs = await controller.discover();
+      smartBulbManager._mergeBulbs();
+      return { ok: true, bulbs };
+    }
+    // Discover all
+    const results = await smartBulbManager.discoverAll();
+    smartBulbManager._mergeBulbs();
+    return { ok: true, results };
+  } catch (error) {
+    return { ok: false, error: error.message };
+  }
+});
+
+ipcMain.handle('luxshift:smartbulb:set-protocol', async (_event, { protocol }) => {
+  if (!smartBulbManager) return { ok: false, error: 'Smart bulb manager not initialized' };
+  return smartBulbManager.setProtocol(protocol);
+});
+
+ipcMain.handle('luxshift:smartbulb:enable', async (_event, { enabled }) => {
+  if (!smartBulbManager) return { ok: false, error: 'Smart bulb manager not initialized' };
+  return smartBulbManager.enable(enabled);
+});
+
+ipcMain.handle('luxshift:smartbulb:get-bulbs', async () => {
+  if (!smartBulbManager) return { ok: false, error: 'Smart bulb manager not initialized' };
+  return { ok: true, bulbs: smartBulbManager.getBulbs() };
+});
+
+ipcMain.handle('luxshift:smartbulb:control', async (_event, { bulbId, action, params = {} }) => {
+  if (!smartBulbManager) return { ok: false, error: 'Smart bulb manager not initialized' };
+  return smartBulbManager.controlBulb(bulbId, action, params);
+});
+
+ipcMain.handle('luxshift:smartbulb:apply-winddown', async (_event, { intensity, transitionMs }) => {
+  if (!smartBulbManager) return { ok: false, error: 'Smart bulb manager not initialized' };
+  return smartBulbManager.applyWindDownState(intensity, transitionMs);
+});
+
+ipcMain.handle('luxshift:smartbulb:restore-normal', async (_event, { transitionMs }) => {
+  if (!smartBulbManager) return { ok: false, error: 'Smart bulb manager not initialized' };
+  return smartBulbManager.restoreNormal(transitionMs);
+});
+
+ipcMain.handle('luxshift:smartbulb:get-status', async () => {
+  if (!smartBulbManager) return { ok: false, error: 'Smart bulb manager not initialized' };
+  return {
+    ok: true,
+    enabled: smartBulbManager.enabled,
+    protocol: smartBulbManager.activeControllerType,
+    bulbs: smartBulbManager.getConnectedBulbs().length,
+    totalBulbs: smartBulbManager.getBulbs().length
+  };
 });
 
 // ---- Update check helper ----

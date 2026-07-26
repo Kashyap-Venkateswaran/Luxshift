@@ -991,6 +991,35 @@
           </div>
         </section>
 
+        <!-- === SMART BULB INTEGRATION SECTION === -->
+        <section class="settings-card">
+          <div class="settings-header">
+            <h2>Smart Bulb Integration</h2>
+          </div>
+          <div class="settings-panel">
+            <label>
+              <input type="checkbox" id="smartBulbEnabledChk" />
+              Enable Smart Bulb Control
+            </label>
+
+            <label>
+              Protocol
+              <select id="smartBulbProtocolSelect" disabled>
+                <option value="">Select a protocol</option>
+              </select>
+            </label>
+
+            <div class="button-row">
+              <button id="discoverBulbsBtn" class="primary-btn" type="button" disabled>Discover Bulbs</button>
+              <button id="refreshBulbsBtn" class="secondary-btn" type="button" disabled>Refresh</button>
+            </div>
+
+            <div id="bulbList" class="bulb-list" style="margin-top: 12px; max-height: 200px; overflow-y: auto;"></div>
+
+            <p id="smartBulbStatus" class="settings-hint"></p>
+          </div>
+        </section>
+
     </aside>
 
     <main class="main">

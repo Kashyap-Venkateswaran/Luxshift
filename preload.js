@@ -132,5 +132,18 @@ contextBridge.exposeInMainWorld('luxshiftAPI', {
       parse: (content, startDate, endDate) =>
         ipcRenderer.invoke('luxshift:calendar:ics:parse', { content, startDate, endDate })
     }
+  },
+
+  // Smart Bulb Integration
+  smartBulb: {
+    getProtocols: () => ipcRenderer.invoke('luxshift:smartbulb:get-protocols'),
+    discover: (protocol) => ipcRenderer.invoke('luxshift:smartbulb:discover', { protocol }),
+    setProtocol: (protocol) => ipcRenderer.invoke('luxshift:smartbulb:set-protocol', { protocol }),
+    enable: (enabled) => ipcRenderer.invoke('luxshift:smartbulb:enable', { enabled }),
+    getBulbs: () => ipcRenderer.invoke('luxshift:smartbulb:get-bulbs'),
+    control: (bulbId, action, params) => ipcRenderer.invoke('luxshift:smartbulb:control', { bulbId, action, params }),
+    applyWindDown: (intensity, transitionMs) => ipcRenderer.invoke('luxshift:smartbulb:apply-winddown', { intensity, transitionMs }),
+    restoreNormal: (transitionMs) => ipcRenderer.invoke('luxshift:smartbulb:restore-normal', { transitionMs }),
+    getStatus: () => ipcRenderer.invoke('luxshift:smartbulb:get-status')
   }
 });

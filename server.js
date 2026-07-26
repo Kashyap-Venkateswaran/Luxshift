@@ -29,7 +29,7 @@ const PROVIDER_POOLS = {
     baseUrl: 'https://api.groq.com/openai/v1/chat/completions',
     model: process.env.GROQ_MODEL || 'llama-3.1-8b-instant',
     formatRequest: (body) => body,
-    formatResponse: (data) => data,
+    formatResponse: (data) => data.choices?.[0]?.message?.content || '',
     authHeader: (key) => `Bearer ${key}`,
     supportsVision: false
   },
@@ -38,7 +38,7 @@ const PROVIDER_POOLS = {
     baseUrl: 'https://api.groq.com/openai/v1/chat/completions',
     model: process.env.GROQ_VISION_MODEL || 'llama-3.2-11b-vision-preview',
     formatRequest: (body) => body,
-    formatResponse: (data) => data,
+    formatResponse: (data) => data.choices?.[0]?.message?.content || '',
     authHeader: (key) => `Bearer ${key}`,
     supportsVision: true
   },
@@ -56,14 +56,7 @@ const PROVIDER_POOLS = {
         maxOutputTokens: body.max_tokens || 650
       }
     }),
-    formatResponse: (data) => ({
-      choices: [{
-        message: {
-          role: 'assistant',
-          content: data.candidates?.[0]?.content?.parts?.[0]?.text || ''
-        }
-      }]
-    }),
+    formatResponse: (data) => data.candidates?.[0]?.content?.parts?.[0]?.text || '',
     authHeader: (key) => `${key}`, // passed as query param
     supportsVision: true
   },
@@ -72,7 +65,7 @@ const PROVIDER_POOLS = {
     baseUrl: 'https://api.openai.com/v1/chat/completions',
     model: process.env.OPENAI_MODEL || 'gpt-4o-mini',
     formatRequest: (body) => body,
-    formatResponse: (data) => data,
+    formatResponse: (data) => data.choices?.[0]?.message?.content || '',
     authHeader: (key) => `Bearer ${key}`,
     supportsVision: true
   },
@@ -81,7 +74,7 @@ const PROVIDER_POOLS = {
     baseUrl: null, // per-key endpoint
     model: null,   // per-key deployment
     formatRequest: (body) => body,
-    formatResponse: (data) => data,
+    formatResponse: (data) => data.choices?.[0]?.message?.content || '',
     authHeader: (key) => `Bearer ${key.key}`,
     supportsVision: true
   },
@@ -95,14 +88,7 @@ const PROVIDER_POOLS = {
       max_tokens: body.max_tokens || 4096,
       temperature: body.temperature ?? 0
     }),
-    formatResponse: (data) => ({
-      choices: [{
-        message: {
-          role: 'assistant',
-          content: data.content?.[0]?.text || ''
-        }
-      }]
-    }),
+    formatResponse: (data) => data.content?.[0]?.text || '',
     authHeader: (key) => `Bearer ${key}`,
     supportsVision: true
   }
@@ -403,7 +389,28 @@ app.post('/parse-schedule', async (req, res) => {
     // For key source, we infer from whether user provided key
     keySource = userKey ? 'user' : 'pool';
 
-    const parsed = cleanJson(rawResponse);
+    // Extract text content from provider response object
+    let responseText = rawResponse;
+    if (rawResponse && typeof rawResponse === 'object') {
+      // Handle OpenAI-compatible response format: { choices: [{ message: { content: "..." } }] }
+      if (rawResponse.choices?.[0]?.message?.content) {
+        responseText = rawResponse.choices[0].message.content;
+      }
+      // Handle Anthropic response format: { content: [{ text: "..." }] }
+      else if (rawResponse.content?.[0]?.text) {
+        responseText = rawResponse.content[0].text;
+      }
+      // Handle Gemini response format: { candidates: [{ content: { parts: [{ text: "..." }] } }] }
+      else if (rawResponse.candidates?.[0]?.content?.parts?.[0]?.text) {
+        responseText = rawResponse.candidates[0].content.parts[0].text;
+      }
+      // Fallback: stringify if we can't find standard fields
+      else {
+        responseText = JSON.stringify(rawResponse);
+      }
+    }
+
+    const parsed = cleanJson(responseText);
 
     if (!parsed) {
       return res.status(502).json({ error: 'The model did not return valid schedule JSON.' });
