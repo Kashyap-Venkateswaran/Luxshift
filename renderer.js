@@ -321,8 +321,23 @@ function wireUI() {
   });
 
   clearBtn?.addEventListener('click', async () => {
+    // Clear text inputs
     input.value = '';
     lateChangesInput.value = '';
+
+    // Clear uploaded images
+    uploadedImage = null;
+    lateChangesUploadedImage = null;
+    if (imagePreview) imagePreview.style.display = 'none';
+    if (imagePreviewImg) imagePreviewImg.src = '';
+    if (imageUpload) imageUpload.value = '';
+    const lateChangesImagePreview = document.getElementById('lateChangesImagePreview');
+    const lateChangesImagePreviewImg = document.getElementById('lateChangesImagePreviewImg');
+    const lateChangesImageUpload = document.getElementById('lateChangesImageUpload');
+    if (lateChangesImagePreview) lateChangesImagePreview.style.display = 'none';
+    if (lateChangesImagePreviewImg) lateChangesImagePreviewImg.src = '';
+    if (lateChangesImageUpload) lateChangesImageUpload.value = '';
+
     try {
       await window.luxshiftAPI?.clearActiveSchedule?.();
     } catch (_error) { }
@@ -421,14 +436,21 @@ function wireUI() {
         modeValue.textContent = 'Idle';
         settingsHint.textContent = 'All user data cleared.';
         updateKeySourceStatus('pool');
-        // Reset form preferences
-        bedtimeInput.value = '00:30';
-        wakeInput.value = '07:30';
-        windDownInput.value = '90';
-        timeFormatInput.value = '12h';
-        locationSearchInput.value = '';
-        clearLocationResults();
-        clearSettingsSummary();
+        // Clear images too
+        uploadedImage = null;
+        lateChangesUploadedImage = null;
+        const _imgPrev = document.getElementById('imagePreview');
+        const _imgPrevImg = document.getElementById('imagePreviewImg');
+        const _imgUp = document.getElementById('imageUpload');
+        const _lcPrev = document.getElementById('lateChangesImagePreview');
+        const _lcPrevImg = document.getElementById('lateChangesImagePreviewImg');
+        const _lcUp = document.getElementById('lateChangesImageUpload');
+        if (_imgPrev) _imgPrev.style.display = 'none';
+        if (_imgPrevImg) _imgPrevImg.src = '';
+        if (_imgUp) _imgUp.value = '';
+        if (_lcPrev) _lcPrev.style.display = 'none';
+        if (_lcPrevImg) _lcPrevImg.src = '';
+        if (_lcUp) _lcUp.value = '';
       } catch (e) {
         settingsHint.textContent = 'Failed to clear all data.';
       }
@@ -761,38 +783,104 @@ const notionChk = document.getElementById('notionChk');
 const connectCalendarBtn = document.getElementById('connectCalendarBtn');
 const calendarStatus = document.getElementById('calendarStatus');
 
+function calendarWeekRange() {
+  return {
+    startDate: new Date().toISOString(),
+    endDate: new Date(Date.now() + 7 * 24 * 60 * 60 * 1000).toISOString()
+  };
+}
+
+async function connectGoogleCalendar() {
+  if (!window.luxshiftAPI?.calendar?.google?.connectInteractive) {
+    throw new Error('Google Calendar integration not available in this build.');
+  }
+  calendarStatus.textContent = 'Opening browser for Google sign-in…';
+  const result = await window.luxshiftAPI.calendar.google.connectInteractive();
+  if (!result?.ok) throw new Error(result?.error || 'Google Calendar connection failed.');
+  return result.calendars || [];
+}
+
+async function connectAppleCalendar() {
+  if (!window.luxshiftAPI?.calendar?.apple) {
+    throw new Error('Apple Calendar integration not available in this build.');
+  }
+  calendarStatus.textContent = 'Checking Apple Calendar access…';
+  const access = await window.luxshiftAPI.calendar.apple.checkAccess();
+  if (!access?.hasAccess) {
+    throw new Error('Calendar access not granted. Go to System Settings → Privacy & Security → Calendars and enable LuxShift, then try again.');
+  }
+  const result = await window.luxshiftAPI.calendar.apple.listCalendars();
+  if (!result?.ok) throw new Error('Could not read Apple Calendar — make sure LuxShift has Calendars permission.');
+  return result.calendars || [];
+}
+
+async function fetchCalendarEvents(selected) {
+  const { startDate, endDate } = calendarWeekRange();
+  const allEvents = [];
+
+  if (selected.includes('google')) {
+    try {
+      const listResult = await window.luxshiftAPI.calendar.google.listCalendars();
+      const calIds = (listResult?.calendars || []).map(c => c.id).filter(Boolean);
+      if (calIds.length) {
+        const eventsResult = await window.luxshiftAPI.calendar.google.fetchEvents(calIds, startDate, endDate);
+        if (eventsResult?.ok) allEvents.push(...(eventsResult.events || []));
+      }
+    } catch (e) {
+      console.warn('Google Calendar events error:', e.message);
+    }
+  }
+
+  if (selected.includes('apple')) {
+    try {
+      const listResult = await window.luxshiftAPI.calendar.apple.listCalendars();
+      const calNames = (listResult?.calendars || []).map(c => c.name).filter(Boolean);
+      if (calNames.length) {
+        const eventsResult = await window.luxshiftAPI.calendar.apple.fetchEvents(calNames, startDate, endDate);
+        if (eventsResult?.ok) allEvents.push(...(eventsResult.events || []));
+      }
+    } catch (e) {
+      console.warn('Apple Calendar events error:', e.message);
+    }
+  }
+
+  return allEvents;
+}
+
 if (googleCalendarChk && appleCalendarChk && notionChk && connectCalendarBtn && calendarStatus) {
   connectCalendarBtn.addEventListener('click', async () => {
     const selected = [];
     if (googleCalendarChk.checked) selected.push('google');
     if (appleCalendarChk.checked) selected.push('apple');
     if (notionChk.checked) selected.push('notion');
+
     if (selected.length === 0) {
       calendarStatus.textContent = 'Select at least one calendar service.';
       return;
     }
-    calendarStatus.textContent = 'Connecting…';
+
+    connectCalendarBtn.disabled = true;
+
     try {
-      const apiBase = window.LUXSHIFT_CONFIG?.API_BASE_URL || 'https://luxshift-api.onrender.com';
-      const resp = await fetch(`${apiBase}/calendar/connect`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ providers: selected })
-      });
-      if (!resp.ok) throw new Error('Connection failed');
-      calendarStatus.textContent = 'Connected! Fetching events…';
-      const eventsResp = await fetch(`${apiBase}/calendar/events?providers=${selected.join(',')}`);
-      if (eventsResp.ok) {
-        const events = await eventsResp.json();
-        console.log('Fetched events:', events);
-        calendarStatus.textContent = `Connected and fetched ${events.length} events.`;
-      } else {
-        const err = await eventsResp.text();
-        calendarStatus.textContent = `Failed to fetch events: ${err}`;
+      if (selected.includes('google')) await connectGoogleCalendar();
+      if (selected.includes('apple')) await connectAppleCalendar();
+      if (selected.includes('notion')) {
+        calendarStatus.textContent = 'Notion: paste your integration token in the Notion token field and try again.';
+        selected.splice(selected.indexOf('notion'), 1);
       }
+
+      if (selected.length === 0) return;
+
+      calendarStatus.textContent = 'Fetching events for the next 7 days…';
+      const events = await fetchCalendarEvents(selected);
+      calendarStatus.textContent = events.length
+        ? `Connected — ${events.length} event${events.length === 1 ? '' : 's'} found in the next 7 days.`
+        : 'Connected — no events found in the next 7 days.';
     } catch (e) {
       calendarStatus.textContent = `Error: ${e.message}`;
-      console.error(e);
+      console.error('Calendar connect error:', e);
+    } finally {
+      connectCalendarBtn.disabled = false;
     }
   });
 }
@@ -1459,4 +1547,3 @@ function escapeHtml(value) {
     .replaceAll('"', '&quot;')
     .replaceAll("'", '&#39;');
 }
-

@@ -34,9 +34,10 @@ const PROVIDER_POOLS = {
     supportsVision: false
   },
   groqVision: {
+    // Reuse the same Groq API keys for vision — groqVision is just a different model on the same API
     keys: parseKeyPool(process.env.GROQ_API_KEYS),
     baseUrl: 'https://api.groq.com/openai/v1/chat/completions',
-    model: process.env.GROQ_VISION_MODEL || 'llama-3.2-11b-vision-preview',
+    model: process.env.GROQ_VISION_MODEL || 'meta-llama/llama-4-scout-17b-16e-instruct',
     formatRequest: (body) => body,
     formatResponse: (data) => data.choices?.[0]?.message?.content || '',
     authHeader: (key) => `Bearer ${key}`,
@@ -369,15 +370,31 @@ app.post('/parse-schedule', async (req, res) => {
     let effectiveProvider = userProvider;
 
     if (needsVision) {
-      // Vision parsing - select a vision-capable provider
+      // Pick the best available vision provider
+      // Priority: user-specified (if vision-capable) → groqVision (Groq keys reused) → gemini → openai
       const visionProviders = ['gemini', 'groqVision', 'openai', 'azure', 'anthropic'];
-      effectiveProvider = visionProviders.includes(userProvider) ? userProvider : 'gemini';
+      const visionPriority = ['groqVision', 'gemini', 'openai', 'azure', 'anthropic'];
+      let visionProvider = null;
 
-      if (!PROVIDER_POOLS[effectiveProvider]?.supportsVision) {
-        return res.status(400).json({ error: `Provider ${effectiveProvider} does not support vision.` });
+      // If user specified a vision-capable provider and has keys, use it
+      if (visionProviders.includes(userProvider) && PROVIDER_POOLS[userProvider]?.keys.length > 0) {
+        visionProvider = userProvider;
+      } else {
+        // Auto-select best available
+        for (const vp of visionPriority) {
+          if (PROVIDER_POOLS[vp]?.keys.length > 0 || (vp === 'groqVision' && PROVIDER_POOLS.groq?.keys.length > 0)) {
+            visionProvider = vp;
+            break;
+          }
+        }
       }
 
-      rawResponse = await askVisionProvider(effectiveProvider, userKey, images);
+      if (!visionProvider) {
+        // No vision provider available — extract what we can from text description
+        rawResponse = await askProvider('groq', userKey, `The user uploaded an image with schedule information but no vision API is configured. Please return an empty schedule result with a helpful message. Text context: ${text || 'none'}`);
+      } else {
+        rawResponse = await askVisionProvider(visionProvider, userKey, images);
+      }
     } else {
       // Text parsing - use the requested provider (or default to groq)
       const textProviders = ['groq', 'gemini', 'openai', 'azure', 'anthropic'];

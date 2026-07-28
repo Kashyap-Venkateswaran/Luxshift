@@ -111,11 +111,12 @@ contextBridge.exposeInMainWorld('luxshiftAPI', {
   // Calendar Integration
   calendar: {
     google: {
-      getAuthUrl: () => ipcRenderer.invoke('luxshift:calendar:google:auth-url'),
-      connect: (code) => ipcRenderer.invoke('luxshift:calendar:google:connect', { code }),
-      listCalendars: (tokens) => ipcRenderer.invoke('luxshift:calendar:google:list-calendars', { tokens }),
-      fetchEvents: (tokens, calendarIds, startDate, endDate) =>
-        ipcRenderer.invoke('luxshift:calendar:google:fetch-events', { tokens, calendarIds, startDate, endDate })
+      connectInteractive: () => ipcRenderer.invoke('luxshift:calendar:google:connect-interactive'),
+      isConnected: () => ipcRenderer.invoke('luxshift:calendar:google:is-connected'),
+      disconnect: () => ipcRenderer.invoke('luxshift:calendar:google:disconnect'),
+      listCalendars: () => ipcRenderer.invoke('luxshift:calendar:google:list-calendars'),
+      fetchEvents: (calendarIds, startDate, endDate) =>
+        ipcRenderer.invoke('luxshift:calendar:google:fetch-events', { calendarIds, startDate, endDate })
     },
     apple: {
       checkAccess: () => ipcRenderer.invoke('luxshift:calendar:apple:check-access'),

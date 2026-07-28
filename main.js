@@ -73,7 +73,8 @@ const DEFAULT_PREFERENCES = {
   preferredLocationName: '',
   preferredLocation: null,
   timeFormat: '12h',
-  timeFormatChosen: false
+  timeFormatChosen: false,
+  googleCalendarTokens: null
 };
 
 // ---- Tray icon ----
@@ -927,30 +928,53 @@ ipcMain.handle('luxshift:clear-all-user-data', async () => {
 
 // ---- Calendar Integration IPC ----
 
-// Google Calendar
-ipcMain.handle('luxshift:calendar:google:auth-url', async () => {
-  const client = new GoogleCalendarClient();
-  return client.getAuthUrl();
+// Google Calendar — single-click interactive OAuth (opens system browser,
+// catches redirect on a local loopback server, stores tokens for reuse)
+ipcMain.handle('luxshift:calendar:google:connect-interactive', async () => {
+  try {
+    const client = new GoogleCalendarClient();
+    const tokens = await client.connectInteractive((url) => shell.openExternal(url));
+    preferencesStore.set('googleCalendarTokens', tokens);
+    const calendars = await client.listCalendars();
+    return { ok: true, calendars };
+  } catch (error) {
+    return { ok: false, error: error.message || 'Google Calendar connection failed.' };
+  }
 });
 
-ipcMain.handle('luxshift:calendar:google:connect', async (_event, { code }) => {
-  const client = new GoogleCalendarClient();
-  const tokens = await client.getTokens(code);
-  return { ok: true, tokens };
+ipcMain.handle('luxshift:calendar:google:list-calendars', async () => {
+  try {
+    const tokens = preferencesStore.get('googleCalendarTokens');
+    if (!tokens) return { ok: false, error: 'Not connected. Click Connect first.' };
+    const client = new GoogleCalendarClient();
+    await client.initialize(tokens);
+    const calendars = await client.listCalendars();
+    return { ok: true, calendars };
+  } catch (error) {
+    return { ok: false, error: error.message };
+  }
 });
 
-ipcMain.handle('luxshift:calendar:google:list-calendars', async (_event, { tokens }) => {
-  const client = new GoogleCalendarClient();
-  await client.initialize(tokens);
-  const calendars = await client.listCalendars();
-  return { ok: true, calendars };
+ipcMain.handle('luxshift:calendar:google:fetch-events', async (_event, { calendarIds, startDate, endDate }) => {
+  try {
+    const tokens = preferencesStore.get('googleCalendarTokens');
+    if (!tokens) return { ok: false, error: 'Not connected. Click Connect first.' };
+    const client = new GoogleCalendarClient();
+    await client.initialize(tokens);
+    const events = await client.getEvents(calendarIds, new Date(startDate), new Date(endDate));
+    return { ok: true, events };
+  } catch (error) {
+    return { ok: false, error: error.message };
+  }
 });
 
-ipcMain.handle('luxshift:calendar:google:fetch-events', async (_event, { tokens, calendarIds, startDate, endDate }) => {
-  const client = new GoogleCalendarClient();
-  await client.initialize(tokens);
-  const events = await client.getEvents(calendarIds, new Date(startDate), new Date(endDate));
-  return { ok: true, events };
+ipcMain.handle('luxshift:calendar:google:is-connected', async () => {
+  return { ok: true, connected: Boolean(preferencesStore.get('googleCalendarTokens')) };
+});
+
+ipcMain.handle('luxshift:calendar:google:disconnect', async () => {
+  preferencesStore.set('googleCalendarTokens', null);
+  return { ok: true };
 });
 
 // Apple Calendar
@@ -974,22 +998,35 @@ ipcMain.handle('luxshift:calendar:apple:fetch-events', async (_event, { calendar
 
 // Notion
 ipcMain.handle('luxshift:calendar:notion:connect', async (_event, { token, databaseId }) => {
-  const client = new NotionCalendarClient();
-  const ok = await client.initialize(token, databaseId);
-  return { ok };
+  try {
+    const client = new NotionCalendarClient();
+    const ok = await client.initialize(token, databaseId);
+    if (ok) preferencesStore.set('notionConfig', { token, databaseId });
+    return { ok };
+  } catch (error) {
+    return { ok: false, error: error.message };
+  }
 });
 
 ipcMain.handle('luxshift:calendar:notion:fetch-events', async (_event, { token, databaseId, startDate, endDate }) => {
-  const client = new NotionCalendarClient();
-  await client.initialize(token, databaseId);
-  const events = await client.getEvents(new Date(startDate), new Date(endDate));
-  return { ok: true, events };
+  try {
+    const client = new NotionCalendarClient();
+    await client.initialize(token, databaseId);
+    const events = await client.getEvents(new Date(startDate), new Date(endDate));
+    return { ok: true, events };
+  } catch (error) {
+    return { ok: false, error: error.message };
+  }
 });
 
 // ICS file import
 ipcMain.handle('luxshift:calendar:ics:parse', async (_event, { content, startDate, endDate }) => {
-  const events = parseICS(content, startDate ? new Date(startDate) : null, endDate ? new Date(endDate) : null);
-  return { ok: true, events };
+  try {
+    const events = parseICS(content, startDate ? new Date(startDate) : null, endDate ? new Date(endDate) : null);
+    return { ok: true, events };
+  } catch (error) {
+    return { ok: false, error: error.message };
+  }
 });
 
 // ---- Smart Bulb Integration IPC ----

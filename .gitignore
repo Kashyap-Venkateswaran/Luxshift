@@ -6,3 +6,4 @@ out/
 nvidia_env.rtf
 *.env.rtf
 .env
+credentials.json

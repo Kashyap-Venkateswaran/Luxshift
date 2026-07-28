@@ -1,12 +1,14 @@
 /**
  * Google Calendar API Integration
- * Uses OAuth 2.0 for authentication
+ * Uses OAuth 2.0 with a local loopback server to catch the redirect,
+ * since a packaged desktop app has no fixed running web server.
  */
 
 const { google } = require('googleapis');
-const { promisify } = require('util');
-const fs = require('fs').promises;
-const path = require('path');
+const http = require('http');
+
+const REDIRECT_PORT = 51823;
+const REDIRECT_URI = `http://127.0.0.1:${REDIRECT_PORT}/callback`;
 
 /**
  * Google Calendar client for LuxShift
@@ -18,18 +20,25 @@ class GoogleCalendarClient {
     this.tokens = null;
   }
 
+  _buildClient() {
+    if (!this.oauth2Client) {
+      this.oauth2Client = new google.auth.OAuth2(
+        process.env.GOOGLE_CLIENT_ID,
+        process.env.GOOGLE_CLIENT_SECRET,
+        REDIRECT_URI
+      );
+    }
+    return this.oauth2Client;
+  }
+
   /**
    * Initialize with stored tokens
    */
   async initialize(tokens) {
     this.tokens = tokens;
-    this.oauth2Client = new google.auth.OAuth2(
-      process.env.GOOGLE_CLIENT_ID,
-      process.env.GOOGLE_CLIENT_SECRET,
-      'http://localhost:8787/auth/google/callback'  // Local redirect for desktop app
-    );
-    this.oauth2Client.setCredentials(tokens);
-    this.calendar = google.calendar({ version: 'v3', auth: this.oauth2Client });
+    const client = this._buildClient();
+    client.setCredentials(tokens);
+    this.calendar = google.calendar({ version: 'v3', auth: client });
     return this;
   }
 
@@ -37,15 +46,9 @@ class GoogleCalendarClient {
    * Get authorization URL for OAuth flow
    */
   getAuthUrl() {
-    if (!this.oauth2Client) {
-      this.oauth2Client = new google.auth.OAuth2(
-        process.env.GOOGLE_CLIENT_ID,
-        process.env.GOOGLE_CLIENT_SECRET,
-        'http://localhost:8787/auth/google/callback'
-      );
-    }
+    const client = this._buildClient();
     const scopes = ['https://www.googleapis.com/auth/calendar.readonly'];
-    return this.oauth2Client.generateAuthUrl({
+    return client.generateAuthUrl({
       access_type: 'offline',
       scope: scopes,
       prompt: 'consent'
@@ -53,20 +56,60 @@ class GoogleCalendarClient {
   }
 
   /**
+   * Runs a short-lived local server to catch the OAuth redirect,
+   * opens the auth URL in the user's default browser, and resolves
+   * with tokens once the user completes sign-in.
+   */
+  async connectInteractive(openExternal) {
+    const client = this._buildClient();
+    const authUrl = this.getAuthUrl();
+
+    const code = await new Promise((resolve, reject) => {
+      const server = http.createServer((req, res) => {
+        try {
+          const url = new URL(req.url, `http://127.0.0.1:${REDIRECT_PORT}`);
+          const authCode = url.searchParams.get('code');
+          const error = url.searchParams.get('error');
+
+          res.writeHead(200, { 'Content-Type': 'text/html' });
+          if (authCode) {
+            res.end('<html><body style="font-family:-apple-system,sans-serif;background:#08111f;color:#fff;display:flex;align-items:center;justify-content:center;height:100vh;margin:0"><div><h2>LuxShift connected ✓</h2><p>You can close this window and return to the app.</p></div></body></html>');
+            resolve(authCode);
+          } else {
+            res.end('<html><body style="font-family:-apple-system,sans-serif;background:#08111f;color:#fff;display:flex;align-items:center;justify-content:center;height:100vh;margin:0"><div><h2>Connection failed</h2><p>Please close this window and try again in LuxShift.</p></div></body></html>');
+            reject(new Error(error || 'No authorization code received'));
+          }
+          setTimeout(() => server.close(), 500);
+        } catch (err) {
+          reject(err);
+        }
+      });
+
+      server.listen(REDIRECT_PORT, '127.0.0.1', () => {
+        openExternal(authUrl);
+      });
+
+      server.on('error', reject);
+
+      // Timeout after 3 minutes if user never completes sign-in
+      setTimeout(() => {
+        server.close();
+        reject(new Error('Google sign-in timed out. Please try again.'));
+      }, 3 * 60 * 1000);
+    });
+
+    return this.getTokens(code);
+  }
+
+  /**
    * Exchange authorization code for tokens
    */
   async getTokens(code) {
-    if (!this.oauth2Client) {
-      this.oauth2Client = new google.auth.OAuth2(
-        process.env.GOOGLE_CLIENT_ID,
-        process.env.GOOGLE_CLIENT_SECRET,
-        'http://localhost:8787/auth/google/callback'
-      );
-    }
-    const { tokens } = await this.oauth2Client.getToken(code);
+    const client = this._buildClient();
+    const { tokens } = await client.getToken(code);
     this.tokens = tokens;
-    this.oauth2Client.setCredentials(tokens);
-    this.calendar = google.calendar({ version: 'v3', auth: this.oauth2Client });
+    client.setCredentials(tokens);
+    this.calendar = google.calendar({ version: 'v3', auth: client });
     return tokens;
   }
 
