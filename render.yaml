@@ -4,7 +4,7 @@ services:
     runtime: node
     plan: free
     buildCommand: npm install
-    startCommand: npm run server
+    startCommand: node -r dotenv/config server.js
     healthCheckPath: /health
     envVars:
       - key: NODE_ENV
