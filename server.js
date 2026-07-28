@@ -370,19 +370,25 @@ app.post('/parse-schedule', async (req, res) => {
     let effectiveProvider = userProvider;
 
     if (needsVision) {
-      // Pick the best available vision provider
-      // Priority: user-specified (if vision-capable) → groqVision (Groq keys reused) → gemini → openai
+      // Vision parsing - select a vision-capable provider
+      // Priority: user-specified (if vision-capable) -> groqVision (reuses Groq keys) -> gemini -> openai -> azure -> anthropic
       const visionProviders = ['gemini', 'groqVision', 'openai', 'azure', 'anthropic'];
       const visionPriority = ['groqVision', 'gemini', 'openai', 'azure', 'anthropic'];
       let visionProvider = null;
 
-      // If user specified a vision-capable provider and has keys, use it
+      // If user specified a vision-capable provider and it has keys, use it
       if (visionProviders.includes(userProvider) && PROVIDER_POOLS[userProvider]?.keys.length > 0) {
         visionProvider = userProvider;
       } else {
-        // Auto-select best available
+        // Auto-select best available vision provider
         for (const vp of visionPriority) {
-          if (PROVIDER_POOLS[vp]?.keys.length > 0 || (vp === 'groqVision' && PROVIDER_POOLS.groq?.keys.length > 0)) {
+          // Special case: groqVision uses same keys as groq
+          if (vp === 'groqVision') {
+            if (PROVIDER_POOLS.groq?.keys.length > 0) {
+              visionProvider = 'groqVision';
+              break;
+            }
+          } else if (PROVIDER_POOLS[vp]?.keys.length > 0) {
             visionProvider = vp;
             break;
           }
@@ -390,11 +396,15 @@ app.post('/parse-schedule', async (req, res) => {
       }
 
       if (!visionProvider) {
-        // No vision provider available — extract what we can from text description
-        rawResponse = await askProvider('groq', userKey, `The user uploaded an image with schedule information but no vision API is configured. Please return an empty schedule result with a helpful message. Text context: ${text || 'none'}`);
-      } else {
-        rawResponse = await askVisionProvider(visionProvider, userKey, images);
+        // No vision provider available — return helpful error
+        return res.status(400).json({
+          error: 'Image parsing requires a vision-capable AI provider. Please configure Groq, Gemini, OpenAI, Azure, or Anthropic API keys on the server.',
+          details: 'No vision provider keys found in environment.'
+        });
       }
+
+      rawResponse = await askVisionProvider(visionProvider, userKey, images);
+      effectiveProvider = visionProvider;
     } else {
       // Text parsing - use the requested provider (or default to groq)
       const textProviders = ['groq', 'gemini', 'openai', 'azure', 'anthropic'];

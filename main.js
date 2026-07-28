@@ -690,6 +690,11 @@ function getCurrentWindDownState() {
 // ---- App lifecycle ----
 app.whenReady().then(async () => {
   app.setName('LuxShift');
+  // Set stable bundle ID for macOS permissions (Calendar, Accessibility, etc.)
+  // This ensures the dev app is recognized as the same app across restarts
+  if (process.platform === 'darwin') {
+    app.setAppUserModelId('com.luxshiftofficial.luxshift');
+  }
 
   preferencesStore = new PreferencesStore({
     name: 'luxshift-preferences',

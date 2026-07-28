@@ -338,9 +338,6 @@ function wireUI() {
     if (lateChangesImagePreviewImg) lateChangesImagePreviewImg.src = '';
     if (lateChangesImageUpload) lateChangesImageUpload.value = '';
 
-    try {
-      await window.luxshiftAPI?.clearActiveSchedule?.();
-    } catch (_error) { }
     renderEmptyPreview();
     modeValue.textContent = 'Idle';
     settingsHint.textContent = 'Cleared current plan.';
@@ -848,6 +845,17 @@ async function fetchCalendarEvents(selected) {
 }
 
 if (googleCalendarChk && appleCalendarChk && notionChk && connectCalendarBtn && calendarStatus) {
+  // Notion fields visibility
+  const notionFields = document.getElementById('notionFields');
+  const notionTokenInput = document.getElementById('notionTokenInput');
+  const notionDatabaseIdInput = document.getElementById('notionDatabaseIdInput');
+
+  if (notionChk && notionFields) {
+    notionChk.addEventListener('change', () => {
+      notionFields.style.display = notionChk.checked ? 'grid' : 'none';
+    });
+  }
+
   connectCalendarBtn.addEventListener('click', async () => {
     const selected = [];
     if (googleCalendarChk.checked) selected.push('google');
@@ -865,8 +873,18 @@ if (googleCalendarChk && appleCalendarChk && notionChk && connectCalendarBtn && 
       if (selected.includes('google')) await connectGoogleCalendar();
       if (selected.includes('apple')) await connectAppleCalendar();
       if (selected.includes('notion')) {
-        calendarStatus.textContent = 'Notion: paste your integration token in the Notion token field and try again.';
-        selected.splice(selected.indexOf('notion'), 1);
+        // Get Notion credentials from input fields
+        const token = notionTokenInput?.value?.trim();
+        const databaseId = notionDatabaseIdInput?.value?.trim();
+        if (!token || !databaseId) {
+          calendarStatus.textContent = 'Notion: Please enter your integration token and database ID.';
+          connectCalendarBtn.disabled = false;
+          return;
+        }
+        calendarStatus.textContent = 'Connecting to Notion…';
+        const result = await window.luxshiftAPI.calendar.notion.connect(token, databaseId);
+        if (!result?.ok) throw new Error(result?.error || 'Notion connection failed.');
+        calendarStatus.textContent = 'Notion connected successfully!';
       }
 
       if (selected.length === 0) return;

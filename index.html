@@ -984,6 +984,22 @@
               Notion
               <input type="checkbox" id="notionChk" />
             </label>
+
+            <!-- Notion config fields (shown when Notion is checked) -->
+            <div id="notionFields" class="input-stack" style="display: none; margin-top: 8px;">
+              <label>
+                Notion Integration Token
+                <input id="notionTokenInput" type="password" placeholder="secret_xxxxxxxxxxxxx" />
+              </label>
+              <label>
+                Notion Database ID
+                <input id="notionDatabaseIdInput" type="text" placeholder="xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx" />
+              </label>
+              <p class="field-helper">
+                Create an integration at <a href="https://www.notion.so/my-integrations" target="_blank" style="color:var(--accent)">notion.so/my-integrations</a>, then share your database with it.
+              </p>
+            </div>
+
             <div class="button-row">
               <button id="connectCalendarBtn" class="primary-btn" type="button">Connect Selected</button>
             </div>
