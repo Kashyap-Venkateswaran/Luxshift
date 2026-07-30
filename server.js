@@ -112,8 +112,24 @@ const PROVIDER_POOLS = {
   gemini: {
     keys: parseKeyPool(process.env.GEMINI_API_KEYS),
     baseUrl: 'https://generativelanguage.googleapis.com/v1beta/models',
-    model: process.env.GEMINI_MODEL || 'gemini-2.5-flash',
-    formatRequest: (body) => body,
+    model: process.env.GEMINI_MODEL || 'gemini-3.5-flash-lite',
+    formatRequest: (body) => {
+      // callProvider builds an OpenAI-style body ({ messages, temperature,
+      // max_tokens }), but Gemini's REST API needs its own shape. Convert here
+      // instead of passing the OpenAI shape straight through — Gemini rejects
+      // unknown top-level fields like "messages"/"temperature"/"max_tokens".
+      const systemMsg = body.messages?.find(m => m.role === 'system');
+      const userMsg = body.messages?.find(m => m.role === 'user');
+      const promptText = [systemMsg?.content, userMsg?.content].filter(Boolean).join('\n\n');
+
+      return {
+        contents: [{ role: 'user', parts: [{ text: promptText }] }],
+        generationConfig: {
+          temperature: body.temperature ?? 0.1,
+          maxOutputTokens: body.max_tokens || 1500
+        }
+      };
+    },
     formatResponse: (data) => data.candidates?.[0]?.content?.parts?.[0]?.text || '',
     authHeader: (key) => `${key}`, // passed as query param
     supportsVision: true
