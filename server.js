@@ -1,18 +1,64 @@
 const express = require('express');
 const cors = require('cors');
+const rateLimit = require('express-rate-limit');
+const { HttpsProxyAgent } = require('https-proxy-agent');
+const fetch = require('node-fetch');
+
+// Custom error class for structured error handling
+class ErrorWithCode extends Error {
+  constructor(message, code) {
+    super(message);
+    this.code = code;
+    this.name = 'ErrorWithCode';
+  }
+}
+
+// Add sharp for image validation
+let sharp;
+try {
+  sharp = require('sharp');
+  console.log('[Server] Sharp available for image validation');
+} catch (e) {
+  console.warn('[Server] Sharp not available, using basic image validation');
+  sharp = null;
+}
 
 const app = express();
 
-const PORT = Number(process.env.PORT || 8787);
+// Rate limiting for API endpoints
+const apiLimiter = rateLimit({
+  windowMs: 60 * 1000, // 1 minute
+  max: 10, // limit each IP to 10 requests per windowMs
+  message: {
+    error: 'RATE_LIMIT_EXCEEDED',
+    details: 'Too many requests. Please try again later.'
+  },
+  standardHeaders: true, // Return rate limit info in the `RateLimit-*` headers
+  legacyHeaders: false, // Disable the `X-RateLimit-*` headers
+  keyGenerator: (req) => {
+    return req.ip; // Use client IP address
+  }
+});
 
-app.use(cors());
+// CORS Configuration
+app.use(cors({
+  origin: process.env.ALLOWED_ORIGINS
+    ? process.env.ALLOWED_ORIGINS.split(',')
+    : (origin, callback) => callback(null, true), // Allow all origins in local dev (including Electron file:// = null origin)
+  methods: ['GET', 'POST'],
+  allowedHeaders: ['Content-Type', 'x-api-key', 'x-user-provider', 'x-user-api-key']
+}));
+
 app.use(express.json({ limit: '10mb' }));
+
+require('dotenv').config(); // Load .env variables if present
 
 // Provider configurations from env vars
 function parseKeyPool(envVar) {
   if (!envVar) return [];
   return envVar.split(',').map(k => k.trim()).filter(Boolean);
 }
+
 function parseAzurePool(envVar) {
   if (!envVar) return [];
   try {
@@ -46,17 +92,8 @@ const PROVIDER_POOLS = {
   gemini: {
     keys: parseKeyPool(process.env.GEMINI_API_KEYS),
     baseUrl: 'https://generativelanguage.googleapis.com/v1beta/models',
-    model: process.env.GEMINI_MODEL || 'gemini-1.5-flash',
-    formatRequest: (body) => ({
-      contents: body.messages.map(m => ({
-        role: m.role === 'assistant' ? 'model' : 'user',
-        parts: Array.isArray(m.content) ? m.content : [{ text: m.content }]
-      })),
-      generationConfig: {
-        temperature: body.temperature ?? 0,
-        maxOutputTokens: body.max_tokens || 650
-      }
-    }),
+    model: process.env.GEMINI_MODEL || 'gemini-2.5-flash',
+    formatRequest: (body) => body,
     formatResponse: (data) => data.candidates?.[0]?.content?.parts?.[0]?.text || '',
     authHeader: (key) => `${key}`, // passed as query param
     supportsVision: true
@@ -137,6 +174,43 @@ function markKeyCooldown(provider, key) {
   keyCooldowns[`${provider}:${keyStr}`] = Date.now() + 60000; // 60s cooldown
 }
 
+// ============================================================
+// Validation Helpers
+// ============================================================
+
+async function validateBase64(base64) {
+  try {
+    const buffer = Buffer.from(base64, 'base64');
+    // Validate base64 padding
+    if (base64.length % 4 !== 0) return false;
+    // Validate base64 format
+    if (!/^[A-Za-z0-9+/]+={0,2}$/.test(base64)) return false;
+
+    // Validate image content if sharp is available
+    if (sharp) {
+      try {
+        await sharp(buffer).metadata();
+        return true;
+      } catch {
+        return false;
+      }
+    }
+
+    // Fallback: validate buffer size
+    return buffer.length > 0;
+  } catch {
+    return false;
+  }
+}
+
+function getImageSize(base64) {
+  return Buffer.from(base64, 'base64').length;
+}
+
+// ============================================================
+// Vision & Text Provider Helpers
+// ============================================================
+
 async function callProvider(provider, userKey, body) {
   const pool = PROVIDER_POOLS[provider];
   if (!pool) throw new Error(`Unknown provider: ${provider}`);
@@ -212,9 +286,135 @@ async function callProvider(provider, userKey, body) {
   throw lastError || new Error('All provider keys exhausted');
 }
 
-// ============================================================
-// Vision & Text Provider Helpers
-// ============================================================
+async function askProvider(provider, userKey, text) {
+  // Build the prompt for text-only parsing
+  const systemPrompt = `You are LuxShift, an AI parser for night schedule planning. Convert a user's natural-language day or night description into structured schedule blocks. If the input is only a preference, opinion, identity statement, or generic interest, return empty blocks. If the input contains a planned activity, intended action, time reference, or clear day-plan context, return blocks. Respond ONLY with a valid JSON object — no markdown, no code fences, no explanation. Use this exact structure:
+{
+  "summary": "short summary of the plan",
+  "confidence": 0.85,
+  "reasons": ["reason one", "reason two"],
+  "blocks": [
+    {
+      "id": "block_1",
+      "type": "work",
+      "title": "Block title",
+      "note": "Short note",
+      "timeLabel": "10 PM – 1 AM",
+      "start": "22:00",
+      "end": "01:00",
+      "certainty": 0.9
+    }
+  ]
+}
+Types allowed: work, unwind, leisure, sleep, wake, break, general. Use 24-hour HH:MM for start/end, or null if unknown. Confidence and certainty are numbers 0–1.`;
+
+  const body = {
+    messages: [
+      { role: 'system', content: systemPrompt },
+      { role: 'user', content: text }
+    ],
+    temperature: 0.1,
+    max_tokens: 1500
+  };
+
+  const result = await callProvider(provider, userKey, body);
+  return result.data;
+}
+
+async function askVisionProvider(_provider, userKey, images) {
+  const keys = PROVIDER_POOLS.gemini?.keys || [];
+  if (!keys.length) {
+    throw new ErrorWithCode('No Gemini API keys configured. Add GEMINI_API_KEYS to Render environment variables.', 'NO_API_KEYS');
+  }
+
+  const key = userKey || keys[poolIndices.gemini % keys.length];
+  poolIndices.gemini = (poolIndices.gemini + 1) % keys.length;
+  const model = PROVIDER_POOLS.gemini.model;
+  const url = `https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent?key=${key}`;
+
+  const systemPrompt = `You are LuxShift, an AI parser for night schedule planning. Analyze the provided image(s) which may contain a timetable, calendar screenshot, message, email, or handwritten schedule. Extract any schedule information and convert it into structured schedule blocks. Respond ONLY with a valid JSON object — no markdown, no code fences, no explanation. Use this exact structure:
+{
+  "summary": "short summary of the plan",
+  "confidence": 0.85,
+  "reasons": ["reason one", "reason two"],
+  "blocks": [
+    {
+      "id": "block_1",
+      "type": "work",
+      "title": "Block title",
+      "note": "Short note",
+      "timeLabel": "10 PM – 1 AM",
+      "start": "22:00",
+      "end": "01:00",
+      "certainty": 0.9
+    }
+  ]
+}
+Types allowed: work, unwind, leisure, sleep, wake, break, general. Use 24-hour HH:MM for start/end, or null if unknown. Confidence and certainty are numbers 0–1.`;
+
+  const parts = [
+    { text: systemPrompt + '\n\nExtract schedule information from the provided image(s).' },
+    ...images.map(img => ({
+      inlineData: {
+        mimeType: img.mimeType || 'image/jpeg',
+        data: img.base64
+      }
+    }))
+  ];
+
+  const body = {
+    contents: [{ role: 'user', parts }],
+    generationConfig: {
+      temperature: 0.1,
+      maxOutputTokens: 1500,
+      responseMimeType: 'text/plain'
+    },
+    safetySettings: [
+      {
+        category: "HARM_CATEGORY_DANGEROUS_CONTENT",
+        threshold: "BLOCK_MEDIUM_AND_ABOVE"
+      },
+      {
+        category: "HARM_CATEGORY_HARASSMENT",
+        threshold: "BLOCK_MEDIUM_AND_ABOVE"
+      }
+    ]
+  };
+
+  // Retry logic for transient failures
+  let lastError;
+  for (let attempt = 0; attempt < 3; attempt++) {
+    try {
+      const response = await fetch(url, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(body)
+      });
+
+      if (!response.ok) {
+        const err = await response.json().catch(() => ({}));
+        const msg = err?.error?.message || `Gemini vision request failed (${response.status})`;
+        throw new Error(msg);
+      }
+
+      const data = await response.json();
+      const text = data?.candidates?.[0]?.content?.parts?.[0]?.text || '';
+
+      if (!text) {
+        throw new Error('Gemini returned an empty response. The image may be unclear or unsupported.');
+      }
+
+      return { choices: [{ message: { role: 'assistant', content: text } }] };
+    } catch (err) {
+      lastError = err;
+      if (attempt < 2) { // Retry twice (3 attempts total)
+        await new Promise(resolve => setTimeout(resolve, 1000 * (attempt + 1)));
+      }
+    }
+  }
+
+  throw lastError;
+}
 
 function cleanJson(text) {
   if (!text) return null;
@@ -251,164 +451,103 @@ function normalizeSchedule(parsed) {
   };
 }
 
-async function askProvider(provider, userKey, text) {
-  // Build the prompt for text-only parsing
-  const systemPrompt = `You are LuxShift, an AI parser for night schedule planning. Convert a user's natural-language day or night description into structured schedule blocks. If the input is only a preference, opinion, identity statement, or generic interest, return empty blocks. If the input contains a planned activity, intended action, time reference, or clear day-plan context, return blocks. Respond ONLY with a valid JSON object — no markdown, no code fences, no explanation. Use this exact structure:
-{
-  "summary": "short summary of the plan",
-  "confidence": 0.85,
-  "reasons": ["reason one", "reason two"],
-  "blocks": [
-    {
-      "id": "block_1",
-      "type": "work",
-      "title": "Block title",
-      "note": "Short note",
-      "timeLabel": "10 PM – 1 AM",
-      "start": "22:00",
-      "end": "01:00",
-      "certainty": 0.9
-    }
-  ]
-}
-Types allowed: work, unwind, leisure, sleep, wake, break, general. Use 24-hour HH:MM for start/end, or null if unknown. Confidence and certainty are numbers 0–1.`;
-
-  const body = {
-    messages: [
-      { role: 'system', content: systemPrompt },
-      { role: 'user', content: text }
-    ],
-    temperature: 0.1,
-    max_tokens: 1500
-  };
-
-  const result = await callProvider(provider, userKey, body);
-  return result.data;
-}
-
-async function askVisionProvider(provider, userKey, images) {
-  // Build the prompt for vision parsing
-  const systemPrompt = `You are LuxShift, an AI parser for night schedule planning. Analyze the provided image(s) which may contain a timetable, calendar screenshot, message, email, or handwritten schedule. Extract any schedule information and convert it into structured schedule blocks. Respond ONLY with a valid JSON object — no markdown, no code fences, no explanation. Use this exact structure:
-{
-  "summary": "short summary of the plan",
-  "confidence": 0.85,
-  "reasons": ["reason one", "reason two"],
-  "blocks": [
-    {
-      "id": "block_1",
-      "type": "work",
-      "title": "Block title",
-      "note": "Short note",
-      "timeLabel": "10 PM – 1 AM",
-      "start": "22:00",
-      "end": "01:00",
-      "certainty": 0.9
-    }
-  ]
-}
-Types allowed: work, unwind, leisure, sleep, wake, break, general. Use 24-hour HH:MM for start/end, or null if unknown. Confidence and certainty are numbers 0–1.`;
-
-  // Format images for the provider
-  const imageParts = images.map(img => {
-    if (provider === 'gemini') {
-      return { inline_data: { mime_type: img.mimeType, data: img.base64 } };
-    }
-    // OpenAI/Groq/Azure format
-    return { type: 'image_url', image_url: { url: `data:${img.mimeType};base64,${img.base64}` } };
-  });
-
-  const userContent = [
-    { type: 'text', text: 'Extract schedule information from these image(s).' },
-    ...imageParts
-  ];
-
-  const body = {
-    messages: [
-      { role: 'system', content: systemPrompt },
-      { role: 'user', content: userContent }
-    ],
-    temperature: 0.1,
-    max_tokens: 1500
-  };
-
-  const result = await callProvider(provider, userKey, body);
-  return result.data;
-}
-
-// Health check — also used as keep-alive ping
-app.get('/health', (_req, res) => {
-  res.json({
-    ok: true,
-    model: 'multi-provider',
-    providers: Object.keys(PROVIDER_POOLS).filter(p => PROVIDER_POOLS[p].keys.length > 0),
-    keyConfigured: Object.values(PROVIDER_POOLS).some(p => p.keys.length > 0)
-  });
-});
-
-// Keep-alive endpoint so Render free tier doesn't spin down
-app.get('/ping', (_req, res) => res.json({ ok: true, ts: Date.now() }));
-
-app.post('/parse-schedule', async (req, res) => {
+// Parse schedule endpoint
+app.post('/parse-schedule', apiLimiter, async (req, res) => {
   try {
+    // Validate API key if provided
+    const apiKey = req.headers['x-api-key'];
+    if (process.env.REQUIRE_API_KEY && apiKey !== process.env.API_KEY) {
+      return res.status(401).json({ error: 'UNAUTHORIZED', details: 'Invalid API key.' });
+    }
+
     const text = String(req.body?.text || '').trim();
     const images = Array.isArray(req.body?.images) ? req.body.images : [];
 
-    if (!text && images.length === 0) return res.status(400).json({ error: 'Missing text or images.' });
+    if (!text && images.length === 0) return res.status(400).json({ error: 'MISSING_INPUT', details: 'Missing text or images.' });
     if (text.length > 8000) {
-      return res.status(400).json({ error: 'Schedule text is too long. Keep it under 8,000 characters.' });
+      return res.status(400).json({ error: 'TEXT_TOO_LONG', details: 'Schedule text is too long. Keep it under 8,000 characters.' });
+    }
+
+    // Validate images
+    const MAX_IMAGES = 2;
+    const MAX_IMAGE_SIZE = 5 * 1024 * 1024; // 5MB
+    const ALLOWED_MIME_TYPES = ['image/png', 'image/jpeg', 'image/webp'];
+
+    if (images.length > MAX_IMAGES) {
+      return res.status(400).json({
+        error: 'IMAGE_LIMIT_EXCEEDED',
+        details: `Maximum ${MAX_IMAGES} images allowed.`
+      });
+    }
+
+    for (const img of images) {
+      // Validate base64 format
+      if (!img.base64 || typeof img.base64 !== 'string') {
+        return res.status(400).json({
+          error: 'INVALID_IMAGE_DATA',
+          details: 'Image data must be a base64 string.'
+        });
+      }
+
+      // Validate base64 integrity
+      if (!/^[A-Za-z0-9+/]+={0,2}$/.test(img.base64) || img.base64.length % 4 !== 0) {
+        return res.status(400).json({
+          error: 'INVALID_BASE64',
+          details: 'Invalid base64 format.'
+        });
+      }
+
+      // Validate MIME type
+      if (!ALLOWED_MIME_TYPES.includes(img.mimeType)) {
+        return res.status(400).json({
+          error: 'UNSUPPORTED_IMAGE_TYPE',
+          details: `Unsupported image type: ${img.mimeType}. Use PNG, JPG, or WebP.`
+        });
+      }
+
+      // Validate size
+      const size = getImageSize(img.base64);
+      if (size > MAX_IMAGE_SIZE) {
+        return res.status(400).json({
+          error: 'IMAGE_TOO_LARGE',
+          details: `Image too large. Maximum ${MAX_IMAGE_SIZE/1024/1024}MB per image.`
+        });
+      }
     }
 
     // Read provider and key from headers
-    const userProvider = req.headers['x-user-provider'] || 'groq';
+    const userProvider = req.headers['x-user-provider'] || 'gemini';
     const userKey = req.headers['x-user-api-key'] || null;
 
     let rawResponse;
     let keySource = 'pool';
+    let effectiveProvider = userProvider;
 
     // Smart model selection: auto-detect if vision is needed
     const needsVision = images.length > 0;
-    let effectiveProvider = userProvider;
 
     if (needsVision) {
-      // Vision parsing - select a vision-capable provider
-      // Priority: user-specified (if vision-capable) -> groqVision (reuses Groq keys) -> gemini -> openai -> azure -> anthropic
-      const visionProviders = ['gemini', 'groqVision', 'openai', 'azure', 'anthropic'];
-      const visionPriority = ['groqVision', 'gemini', 'openai', 'azure', 'anthropic'];
-      let visionProvider = null;
-
-      // If user specified a vision-capable provider and it has keys, use it
-      if (visionProviders.includes(userProvider) && PROVIDER_POOLS[userProvider]?.keys.length > 0) {
-        visionProvider = userProvider;
-      } else {
-        // Auto-select best available vision provider
-        for (const vp of visionPriority) {
-          // Special case: groqVision uses same keys as groq
-          if (vp === 'groqVision') {
-            if (PROVIDER_POOLS.groq?.keys.length > 0) {
-              visionProvider = 'groqVision';
-              break;
-            }
-          } else if (PROVIDER_POOLS[vp]?.keys.length > 0) {
-            visionProvider = vp;
-            break;
-          }
-        }
-      }
-
-      if (!visionProvider) {
-        // No vision provider available — return helpful error
+      // Always use Gemini for vision
+      if (!PROVIDER_POOLS.gemini?.keys.length) {
         return res.status(400).json({
-          error: 'Image parsing requires a vision-capable AI provider. Please configure Groq, Gemini, OpenAI, Azure, or Anthropic API keys on the server.',
-          details: 'No vision provider keys found in environment.'
+          error: 'VISION_NOT_CONFIGURED',
+          details: 'Image parsing requires Gemini API keys. Add GEMINI_API_KEYS to your environment variables.'
         });
       }
 
-      rawResponse = await askVisionProvider(visionProvider, userKey, images);
-      effectiveProvider = visionProvider;
+      try {
+        rawResponse = await askVisionProvider('gemini', userKey, images);
+        effectiveProvider = 'gemini';
+      } catch (visionError) {
+        console.error('[Vision] Vision processing failed:', visionError);
+        // Fallback to text-only parsing with a warning
+        const fallbackText = `${text}\n\n[Note: Image processing failed - ${visionError.message}]`;
+        rawResponse = await askProvider(effectiveProvider, userKey, fallbackText);
+      }
     } else {
-      // Text parsing - use the requested provider (or default to groq)
-      const textProviders = ['groq', 'gemini', 'openai', 'azure', 'anthropic'];
-      effectiveProvider = textProviders.includes(userProvider) ? userProvider : 'groq';
+      // Text parsing - use the requested provider (or default to gemini)
+      const textProviders = ['gemini', 'groq', 'openai', 'azure', 'anthropic'];
+      effectiveProvider = textProviders.includes(userProvider) ? userProvider : 'gemini';
 
       rawResponse = await askProvider(effectiveProvider, userKey, text);
     }
@@ -440,7 +579,10 @@ app.post('/parse-schedule', async (req, res) => {
     const parsed = cleanJson(responseText);
 
     if (!parsed) {
-      return res.status(502).json({ error: 'The model did not return valid schedule JSON.' });
+      return res.status(502).json({
+        error: 'INVALID_RESPONSE',
+        details: 'The model did not return valid schedule JSON.'
+      });
     }
 
     const schedule = normalizeSchedule(parsed);
@@ -455,12 +597,71 @@ app.post('/parse-schedule', async (req, res) => {
     res.set('x-key-source', keySource);
     return res.json(schedule);
   } catch (error) {
+    console.error('[Server] Parsing error:', error);
+
+    // Handle specific error types
+    if (error instanceof ErrorWithCode) {
+      let statusCode = 500;
+      let errorDetails = error.message;
+
+      switch (error.code) {
+        case 'INVALID_API_KEY':
+        case 'PERMISSION_DENIED':
+          statusCode = 401;
+          break;
+        case 'QUOTA_EXCEEDED':
+        case 'RESOURCES_EXHAUSTED':
+          statusCode = 429;
+          break;
+        case 'TIMEOUT_ERROR':
+        case 'NETWORK_ERROR':
+          statusCode = 504;
+          break;
+        case 'UNSUPPORTED_IMAGE_FORMAT':
+        case 'INVALID_IMAGE_CONTENT':
+          statusCode = 400;
+          break;
+        case 'NO_API_KEYS':
+          statusCode = 400;
+          break;
+        default:
+          statusCode = 500;
+      }
+
+      return res.status(statusCode).json({
+        error: error.code,
+        details: errorDetails
+      });
+    }
+
+    // Handle generic errors
+    if (error.message.includes('fetch failed') || error.message.includes('Failed to fetch')) {
+      return res.status(504).json({
+        error: 'NETWORK_ERROR',
+        details: 'Could not connect to the parsing service. Please check your internet connection.'
+      });
+    }
+
     return res.status(500).json({
-      error: 'Schedule parsing failed.',
-      details: error?.message || 'Unknown server error.'
+      error: 'SCHEDULE_PARSING_FAILED',
+      details: 'Failed to parse schedule.',
+      providerError: error.message
     });
   }
 });
+
+// Health check — also used as keep-alive ping
+app.get('/health', (_req, res) => {
+  res.json({
+    ok: true,
+    model: 'multi-provider',
+    providers: Object.keys(PROVIDER_POOLS).filter(p => PROVIDER_POOLS[p].keys.length > 0),
+    keyConfigured: Object.values(PROVIDER_POOLS).some(p => p.keys.length > 0)
+  });
+});
+
+// Keep-alive endpoint so Render free tier doesn't spin down
+app.get('/ping', (_req, res) => res.json({ ok: true, ts: Date.now() }));
 
 // Calendar integration endpoints
 app.post('/calendar/connect', async (req, res) => {
@@ -518,6 +719,7 @@ app.get('/calendar/events', async (req, res) => {
   res.json(events);
 });
 
+const PORT = Number(process.env.PORT || 8787);
 app.listen(PORT, () => {
   console.log(`LuxShift proxy running at http://localhost:${PORT}`);
   console.log('Configured providers:', Object.entries(PROVIDER_POOLS)
