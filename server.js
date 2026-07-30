@@ -1,7 +1,6 @@
 const express = require('express');
 const cors = require('cors');
 const rateLimit = require('express-rate-limit');
-const { HttpsProxyAgent } = require('https-proxy-agent');
 const fetch = require('node-fetch');
 
 // Custom error class for structured error handling
@@ -50,6 +49,26 @@ app.use(cors({
 }));
 
 app.use(express.json({ limit: '10mb' }));
+
+// Surface body-parser errors (e.g. payload too large, malformed JSON) as a
+// clear response instead of Express's default bare 500 — and log them so
+// we can actually see this class of failure in Render logs.
+app.use((err, req, res, next) => {
+  if (err) {
+    console.error('[Server] Body parsing error:', err.type || err.name, err.message);
+    if (err.type === 'entity.too.large') {
+      return res.status(413).json({
+        error: 'PAYLOAD_TOO_LARGE',
+        details: 'Request body too large. Try a smaller image.'
+      });
+    }
+    return res.status(400).json({
+      error: 'BAD_REQUEST',
+      details: 'Malformed request body.'
+    });
+  }
+  next();
+});
 
 require('dotenv').config(); // Load .env variables if present
 
@@ -482,18 +501,30 @@ app.post('/parse-schedule', apiLimiter, async (req, res) => {
 
     for (const img of images) {
       // Validate base64 format
-      if (!img.base64 || typeof img.base64 !== 'string') {
+      if (!img.base64) {
         return res.status(400).json({
-          error: 'INVALID_IMAGE_DATA',
-          details: 'Image data must be a base64 string.'
+          error: 'MISSING_IMAGE_DATA',
+          details: 'No image data provided.'
+        });
+      }
+      if (typeof img.base64 !== 'string') {
+        return res.status(400).json({
+          error: 'INVALID_IMAGE_TYPE',
+          details: 'Image data must be a string.'
         });
       }
 
       // Validate base64 integrity
-      if (!/^[A-Za-z0-9+/]+={0,2}$/.test(img.base64) || img.base64.length % 4 !== 0) {
+      if (!/^[A-Za-z0-9+/]+={0,2}$/.test(img.base64)) {
         return res.status(400).json({
-          error: 'INVALID_BASE64',
-          details: 'Invalid base64 format.'
+          error: 'INVALID_BASE64_FORMAT',
+          details: 'Image data is not valid base64.'
+        });
+      }
+      if (img.base64.length % 4 !== 0) {
+        return res.status(400).json({
+          error: 'INVALID_BASE64_PADDING',
+          details: 'Image data has incorrect base64 padding.'
         });
       }
 
@@ -540,9 +571,32 @@ app.post('/parse-schedule', apiLimiter, async (req, res) => {
         effectiveProvider = 'gemini';
       } catch (visionError) {
         console.error('[Vision] Vision processing failed:', visionError);
-        // Fallback to text-only parsing with a warning
-        const fallbackText = `${text}\n\n[Note: Image processing failed - ${visionError.message}]`;
-        rawResponse = await askProvider(effectiveProvider, userKey, fallbackText);
+
+        // If there's no text to fall back on, there's nothing useful we can do —
+        // surface the real vision error instead of masking it with a second failure.
+        if (!text) {
+          return res.status(502).json({
+            error: 'VISION_FAILED',
+            details: `Image parsing failed: ${visionError.message}`
+          });
+        }
+
+        // Fallback to text-only parsing with a warning. Always use gemini here —
+        // it's the only provider we've already confirmed has configured keys
+        // (we wouldn't have reached this branch otherwise), whereas userProvider
+        // (e.g. 'groq') may have zero keys configured and would throw again,
+        // masking the original vision error behind an unrelated 500.
+        try {
+          const fallbackText = `${text}\n\n[Note: Image processing failed - ${visionError.message}]`;
+          rawResponse = await askProvider('gemini', userKey, fallbackText);
+          effectiveProvider = 'gemini';
+        } catch (fallbackError) {
+          console.error('[Vision] Text fallback also failed:', fallbackError);
+          return res.status(502).json({
+            error: 'VISION_FAILED',
+            details: `Image parsing failed: ${visionError.message}`
+          });
+        }
       }
     } else {
       // Text parsing - use the requested provider (or default to gemini)

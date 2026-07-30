@@ -7,52 +7,80 @@ const { execFile } = require('child_process');
 const { promisify } = require('util');
 const execFileAsync = promisify(execFile);
 
-/**
- * Apple Calendar client for LuxShift
- * Uses native macOS EventKit via osascript
- */
 class AppleCalendarClient {
   constructor() {}
 
-  /**
-   * Check if Calendar access is granted
-   */
+  _escapeAppleScriptString(value) {
+    return String(value ?? '')
+      .replace(/\\/g, '\\\\')
+      .replace(/"/g, '\\"');
+  }
+
+  _toAppleScriptDate(date) {
+    const d = new Date(date);
+    if (Number.isNaN(d.getTime())) {
+      throw new Error('Invalid date supplied to Apple Calendar client.');
+    }
+
+    const monthNames = [
+      'January', 'February', 'March', 'April', 'May', 'June',
+      'July', 'August', 'September', 'October', 'November', 'December'
+    ];
+
+    const month = monthNames[d.getMonth()];
+    const day = d.getDate();
+    const year = d.getFullYear();
+    const hours = d.getHours();
+    const minutes = String(d.getMinutes()).padStart(2, '0');
+    const seconds = String(d.getSeconds()).padStart(2, '0');
+    const suffix = hours >= 12 ? 'PM' : 'AM';
+    const hour12 = ((hours + 11) % 12) + 1;
+
+    return `${month} ${day}, ${year} ${hour12}:${minutes}:${seconds} ${suffix}`;
+  }
+
+  _runAppleScript(script) {
+    return execFileAsync('osascript', ['-e', script], {
+      maxBuffer: 1024 * 1024 * 8
+    });
+  }
+
   async checkAccess() {
     const script = `
       tell application "Calendar"
         try
           get name of every calendar
           return "granted"
-        on error
+        on error errMsg number errNum
           return "denied"
         end try
       end tell
     `;
+
     try {
-      const { stdout } = await execFileAsync('osascript', ['-e', script]);
+      const { stdout } = await this._runAppleScript(script);
       return stdout.trim() === 'granted';
-    } catch {
+    } catch (error) {
+      console.error('Apple Calendar access check failed:', error.message);
       return false;
     }
   }
 
-  /**
-   * List all calendars
-   */
   async listCalendars() {
     const script = `
+      set text item delimiters to ""
       tell application "Calendar"
-        set calList to {}
+        set outText to ""
         repeat with cal in every calendar
-          set end of calList to {name:name of cal, id:id of cal, color:color of cal as string}
+          set outText to outText & (id of cal as text) & "||" & (name of cal as text) & linefeed
         end repeat
-        return calList
+        return outText
       end tell
     `;
+
     try {
-      const { stdout } = await execFileAsync('osascript', ['-e', script]);
-      // Parse AppleScript record list
-      return this._parseCalendarList(stdout.trim());
+      const { stdout } = await this._runAppleScript(script);
+      return this._parseCalendarList(stdout);
     } catch (error) {
       console.error('Error listing Apple calendars:', error.message);
       return [];
@@ -60,48 +88,76 @@ class AppleCalendarClient {
   }
 
   _parseCalendarList(output) {
-    // AppleScript returns something like: {name:"Home", id:"xxx", color:"..."}, {name:"Work", id:"yyy", color:"..."}
-    const calendars = [];
-    const regex = /\{name:"([^"]+)", id:"([^"]+)", color:"([^"]+)"\}/g;
-    let match;
-    while ((match = regex.exec(output)) !== null) {
-      calendars.push({
-        name: match[1],
-        id: match[2],
-        color: match[3]
-      });
-    }
-    return calendars;
+    return String(output || '')
+      .split(/\r?\n/)
+      .map((line) => line.trim())
+      .filter(Boolean)
+      .map((line) => {
+        const [id, name] = line.split('||');
+        return {
+          id: id || '',
+          name: name || 'Untitled'
+        };
+      })
+      .filter((item) => item.id && item.name);
   }
 
-  /**
-   * Fetch events from selected calendars within date range
-   */
   async getEvents(calendarNames, startDate, endDate) {
-    const calNames = calendarNames.join('","');
-    const startISO = startDate.toISOString().replace('T', ' ').split('.')[0];
-    const endISO = endDate.toISOString().replace('T', ' ').split('.')[0];
+    if (!Array.isArray(calendarNames) || calendarNames.length === 0) {
+      return [];
+    }
+
+    const startStr = this._escapeAppleScriptString(this._toAppleScriptDate(startDate));
+    const endStr = this._escapeAppleScriptString(this._toAppleScriptDate(endDate));
+    const calendarListLiteral = calendarNames
+      .filter(Boolean)
+      .map((name) => `"${this._escapeAppleScriptString(name)}"`)
+      .join(', ');
 
     const script = `
+      set startDate to date "${startStr}"
+      set endDate to date "${endStr}"
+      set lineSep to "<<<LUXSHIFT_LINE>>>"
+      set fieldSep to "<<<LUXSHIFT_FIELD>>>"
+
       tell application "Calendar"
-        set startDate to date "${startISO}"
-        set endDate to date "${endISO}"
-        set eventList to {}
-        repeat with calName in {"${calNames}"}
+        set outText to ""
+        repeat with calName in {${calendarListLiteral}}
           try
-            set cal to calendar calName
-            set calEvents to every event of cal whose start date >= startDate and end date <= endDate
+            set calRef to first calendar whose name is (contents of calName)
+            set calEvents to every event of calRef whose end date > startDate and start date < endDate
             repeat with ev in calEvents
-              set end of eventList to {summary:summary of ev, start:start date of ev, end:end date of ev, description:description of ev, location:location of ev, uid:uid of ev, calendar:name of cal}
+              set eventId to ""
+              try
+                set eventId to uid of ev as text
+              end try
+
+              set eventTitle to ""
+              try
+                set eventTitle to summary of ev as text
+              end try
+
+              set eventDesc to ""
+              try
+                set eventDesc to description of ev as text
+              end try
+
+              set eventLoc to ""
+              try
+                set eventLoc to location of ev as text
+              end try
+
+              set outText to outText & eventId & fieldSep & eventTitle & fieldSep & ((start date of ev) as text) & fieldSep & ((end date of ev) as text) & fieldSep & eventDesc & fieldSep & eventLoc & fieldSep & (name of calRef as text) & lineSep
             end repeat
           end try
         end repeat
-        return eventList
+        return outText
       end tell
     `;
+
     try {
-      const { stdout } = await execFileAsync('osascript', ['-e', script]);
-      return this._parseEvents(stdout.trim());
+      const { stdout } = await this._runAppleScript(script);
+      return this._parseEvents(stdout);
     } catch (error) {
       console.error('Error fetching Apple Calendar events:', error.message);
       return [];
@@ -109,24 +165,31 @@ class AppleCalendarClient {
   }
 
   _parseEvents(output) {
-    // Parse AppleScript event records
-    const events = [];
-    // AppleScript returns: {summary:"Event", start:date "...", end:date "...", description:"...", location:"...", uid:"...", calendar:"CalName"}
-    const regex = /\{summary:"([^"]*)", start:date "([^"]+)", end:date "([^"]+)", description:"([^"]*)", location:"([^"]*)", uid:"([^"]*)", calendar:"([^"]+)"\}/g;
-    let match;
-    while ((match = regex.exec(output)) !== null) {
-      events.push({
-        title: match[1] || 'Untitled',
-        start: new Date(match[2]),
-        end: new Date(match[3]),
-        description: match[4] || '',
-        location: match[5] || '',
-        id: match[6],
-        calendarName: match[7],
-        source: 'apple'
-      });
-    }
-    return events;
+    const lineSep = '<<<LUXSHIFT_LINE>>>';
+    const fieldSep = '<<<LUXSHIFT_FIELD>>>';
+
+    return String(output || '')
+      .split(lineSep)
+      .map((line) => line.trim())
+      .filter(Boolean)
+      .map((line) => {
+        const parts = line.split(fieldSep);
+        if (parts.length < 7) return null;
+
+        const [id, title, start, end, description, location, calendarName] = parts;
+
+        return {
+          id: id || '',
+          title: title || 'Untitled',
+          start: start ? new Date(start) : null,
+          end: end ? new Date(end) : null,
+          description: description || '',
+          location: location || '',
+          calendarName: calendarName || '',
+          source: 'apple'
+        };
+      })
+      .filter((event) => event && event.start && !Number.isNaN(event.start.getTime()));
   }
 }
 

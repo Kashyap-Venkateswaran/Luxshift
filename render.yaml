@@ -7,15 +7,52 @@ services:
     startCommand: node -r dotenv/config server.js
     healthCheckPath: /health
     envVars:
-      - key: NODE_ENV
-        value: production
+      # API Keys (sensitive - use Render's secret management)
       - key: GROQ_API_KEYS
         sync: false
+      - key: GROQ_VISION_MODEL
+        value: "meta-llama/llama-4-scout-17b-16e-instruct"
       - key: GEMINI_API_KEYS
         sync: false
+      - key: GEMINI_MODEL
+        value: "gemini-1.5-flash"
       - key: OPENAI_API_KEYS
         sync: false
-      - key: AZURE_OPENAI_CONFIG
+      - key: AZURE_OPENAI_KEYS
         sync: false
       - key: ANTHROPIC_API_KEYS
         sync: false
+
+      # Security Settings
+      - key: REQUIRE_API_KEY
+        value: "true"
+      - key: API_KEY
+        sync: false
+      - key: RATE_LIMIT_WINDOW_MS
+        value: "60000"  # 1 minute
+      - key: RATE_LIMIT_MAX_REQUESTS
+        value: "60"     # 60 requests per window
+
+      # Certificate Pinning
+      - key: OPENAI_CERT_FINGERPRINT
+        sync: false
+      - key: GROQ_CERT_FINGERPRINT
+        sync: false
+      - key: GOOGLE_CERT_FINGERPRINT
+        sync: false
+      - key: ANTHROPIC_CERT_FINGERPRINT
+        sync: false
+      - key: ENABLE_CERTIFICATE_PINNING
+        value: "false"
+
+      # CORS Settings
+      - key: ALLOWED_ORIGINS
+        value: "https://luxshift.com,https://app.luxshift.com"
+
+      # Content Security Policy
+      - key: CSP_DIRECTIVES
+        value: "default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data:; font-src 'self'; connect-src 'self' https://api.openai.com https://api.groq.com https://generativelanguage.googleapis.com https://api.anthropic.com; frame-src 'none'; object-src 'none'"
+
+      # Trusted Proxy Settings
+      - key: TRUST_PROXY
+        value: "true"

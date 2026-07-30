@@ -12,7 +12,7 @@
     "start": "electron .",
     "server": "node server.js",
     "pack": "electron-builder --dir --mac --universal",
-    "dist": "electron-builder --mac --universal && node organize-build.js"
+    "dist": "electron-builder --mac --universal && node scripts/organize-build.js"
   },
   "devDependencies": {
     "electron": "^43.1.1",
@@ -21,10 +21,16 @@
   "dependencies": {
     "@notionhq/client": "^2.3.0",
     "cors": "^2.8.6",
+    "dompurify": "^3.1.6",
+    "dotenv": "^16.6.1",
     "electron-store": "^8.1.0",
-    "express": "^5.2.1",
+    "express": "^4.19.2",
+    "express-rate-limit": "^6.11.2",
     "googleapis": "^144.0.0",
+    "helmet": "^7.1.0",
     "ical.js": "^1.5.0",
+    "node-fetch": "^3.3.2",
+    "sharp": "^0.33.4",
     "suncalc": "^1.9.0"
   },
   "build": {

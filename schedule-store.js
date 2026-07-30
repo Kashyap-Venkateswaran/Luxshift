@@ -1,12 +1,13 @@
 const ScheduleStore = require('electron-store').default;
+const { saveApiKey, getApiKey, deleteApiKey, clearAllApiKeys } = require('./keychain-store');
 
 const scheduleStore = new ScheduleStore({
   name: 'luxshift-schedules',
   defaults: {
     activeSchedule: null,
     archivedSchedules: [],
-    userApiKey: null,
-    userApiProvider: null
+    userApiKey: null, // Deprecated: kept for backward compatibility
+    userApiProvider: null // Deprecated: kept for backward compatibility
   }
 });
 
@@ -80,6 +81,13 @@ function getScheduleBounds({ parsedBlocks = [], fallbackStart = null, fallbackEn
 
 function isScheduleStillActive(schedule, now = new Date()) {
   if (!schedule) return false;
+
+  // If the schedule is from a previous day, it is expired regardless of endAt
+  if (schedule.dateKey) {
+    const todayKey = now.toISOString().split('T')[0];
+    if (schedule.dateKey < todayKey) return false;
+  }
+
   if (!schedule.endAt) return true;
 
   const end = new Date(schedule.endAt);
@@ -165,35 +173,109 @@ function archiveExpiredActiveSchedule() {
 }
 
 function getUserApiKey() {
-  const key = scheduleStore.get('userApiKey');
+  // For backward compatibility: check if key is still in electron-store
+  const legacyKey = scheduleStore.get('userApiKey');
+  const legacyProvider = scheduleStore.get('userApiProvider');
+
+  if (legacyKey && legacyProvider) {
+    // Migrate to keychain and clear from electron-store
+    // Wait for migration to complete before returning
+    return saveApiKey(legacyKey, legacyProvider)
+      .then(result => {
+        if (result.ok) {
+          scheduleStore.set('userApiKey', null);
+          scheduleStore.set('userApiProvider', null);
+          return { ok: true, key: legacyKey, provider: legacyProvider };
+        } else {
+          // Migration failed, but still return the legacy key
+          return { ok: true, key: legacyKey, provider: legacyProvider };
+        }
+      })
+      .catch(() => {
+        // Migration failed silently, return legacy key
+        return { ok: true, key: legacyKey, provider: legacyProvider };
+      });
+  }
+
+  // Check keychain for API key
   const provider = scheduleStore.get('userApiProvider');
-  if (!key || !provider) return { ok: true, key: null, provider: null };
-  return { ok: true, key, provider };
+  if (provider) {
+    return getApiKey(provider)
+      .then(result => {
+        if (result.ok) {
+          return { ok: true, key: result.key, provider };
+        } else {
+          return { ok: false, error: result.error };
+        }
+      })
+      .catch(error => {
+        return { ok: false, error: error.message };
+      });
+  }
+
+  return Promise.resolve({ ok: true, key: null, provider: null });
 }
 
 function saveUserApiKey(key, provider) {
   if (!key || !provider) {
+    // Clear both legacy and keychain storage
     scheduleStore.set('userApiKey', null);
     scheduleStore.set('userApiProvider', null);
-    return { ok: true, cleared: true };
+
+    if (provider) {
+      return deleteApiKey(provider)
+        .then(result => ({ ok: result.ok, cleared: true, error: result.error }))
+        .catch(error => ({ ok: false, error: error.message }));
+    }
+
+    return Promise.resolve({ ok: true, cleared: true });
   }
-  scheduleStore.set('userApiKey', key);
-  scheduleStore.set('userApiProvider', provider);
-  return { ok: true, key, provider };
+
+  // Save to keychain
+  return saveApiKey(key, provider)
+    .then(result => {
+      if (result.ok) {
+        // Update provider in electron-store for reference
+        scheduleStore.set('userApiProvider', provider);
+        // Clear legacy key if it exists
+        scheduleStore.set('userApiKey', null);
+        return { ok: true, key, provider };
+      } else {
+        return { ok: false, error: result.error };
+      }
+    })
+    .catch(error => {
+      return { ok: false, error: error.message };
+    });
 }
 
 function deleteUserApiKey() {
+  const provider = scheduleStore.get('userApiProvider');
+
+  // Clear both legacy and keychain storage
   scheduleStore.set('userApiKey', null);
   scheduleStore.set('userApiProvider', null);
-  return { ok: true };
+
+  if (provider) {
+    return deleteApiKey(provider)
+      .then(result => ({ ok: result.ok, error: result.error }))
+      .catch(error => ({ ok: false, error: error.message }));
+  }
+
+  return Promise.resolve({ ok: true });
 }
 
 function clearAllUserData() {
+  // Clear legacy data
   scheduleStore.set('userApiKey', null);
   scheduleStore.set('userApiProvider', null);
   scheduleStore.set('activeSchedule', null);
   scheduleStore.set('archivedSchedules', []);
-  return { ok: true };
+
+  // Clear all API keys from keychain
+  return clearAllApiKeys()
+    .then(result => ({ ok: result.ok, error: result.error }))
+    .catch(error => ({ ok: false, error: error.message }));
 }
 
 module.exports = {

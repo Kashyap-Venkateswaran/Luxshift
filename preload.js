@@ -26,14 +26,9 @@ function getSunData({ latitude, longitude, use24h = false }) {
   const sunset = formatClock(times.sunset, use24h);
 
   let phase = 'Night';
-
-  if (position.altitude > 20 * Math.PI / 180) {
-    phase = 'High daylight';
-  } else if (position.altitude > 0) {
-    phase = 'Daylight';
-  } else if (position.altitude > -6 * Math.PI / 180) {
-    phase = 'Twilight';
-  }
+  if (position.altitude > 20 * Math.PI / 180) phase = 'High daylight';
+  else if (position.altitude > 0) phase = 'Daylight';
+  else if (position.altitude > -6 * Math.PI / 180) phase = 'Twilight';
 
   return {
     phase,
@@ -70,9 +65,7 @@ contextBridge.exposeInMainWorld('luxshiftAPI', {
   },
 
   removeWindDownListener: (listener) => {
-    if (listener) {
-      ipcRenderer.removeListener('luxshift:winddown-state', listener);
-    }
+    if (listener) ipcRenderer.removeListener('luxshift:winddown-state', listener);
   },
 
   onSunlightNudge: (callback) => {
@@ -82,33 +75,31 @@ contextBridge.exposeInMainWorld('luxshiftAPI', {
   },
 
   removeSunlightNudgeListener: (listener) => {
-    if (listener) {
-      ipcRenderer.removeListener('luxshift:sunlight-nudge', listener);
-    }
+    if (listener) ipcRenderer.removeListener('luxshift:sunlight-nudge', listener);
   },
 
   checkPermissions: () => ipcRenderer.invoke('luxshift:check-permissions'),
   requestNotifications: () => ipcRenderer.invoke('luxshift:request-notifications'),
   requestAccessibility: () => ipcRenderer.invoke('luxshift:request-accessibility'),
   openAccessibilitySettings: () => ipcRenderer.invoke('luxshift:open-accessibility-settings'),
+
   onPermissionStatus: (callback) => {
     const listener = (_event, payload) => callback(payload);
     ipcRenderer.on('luxshift:permission-status', listener);
     return listener;
   },
+
   removePermissionListener: (listener) => {
     if (listener) ipcRenderer.removeListener('luxshift:permission-status', listener);
   },
 
   getSunData,
 
-  // API Key management
   getUserApiKey: () => ipcRenderer.invoke('luxshift:get-user-api-key'),
   saveUserApiKey: (key, provider) => ipcRenderer.invoke('luxshift:save-user-api-key', { key, provider }),
   deleteUserApiKey: () => ipcRenderer.invoke('luxshift:delete-user-api-key'),
   clearAllUserData: () => ipcRenderer.invoke('luxshift:clear-all-user-data'),
 
-  // Calendar Integration
   calendar: {
     google: {
       connectInteractive: () => ipcRenderer.invoke('luxshift:calendar:google:connect-interactive'),
@@ -125,7 +116,8 @@ contextBridge.exposeInMainWorld('luxshiftAPI', {
         ipcRenderer.invoke('luxshift:calendar:apple:fetch-events', { calendarNames, startDate, endDate })
     },
     notion: {
-      connect: (token, databaseId) => ipcRenderer.invoke('luxshift:calendar:notion:connect', { token, databaseId }),
+      connect: (token, databaseId) =>
+        ipcRenderer.invoke('luxshift:calendar:notion:connect', { token, databaseId }),
       fetchEvents: (token, databaseId, startDate, endDate) =>
         ipcRenderer.invoke('luxshift:calendar:notion:fetch-events', { token, databaseId, startDate, endDate })
     },
@@ -135,16 +127,18 @@ contextBridge.exposeInMainWorld('luxshiftAPI', {
     }
   },
 
-  // Smart Bulb Integration
   smartBulb: {
     getProtocols: () => ipcRenderer.invoke('luxshift:smartbulb:get-protocols'),
     discover: (protocol) => ipcRenderer.invoke('luxshift:smartbulb:discover', { protocol }),
     setProtocol: (protocol) => ipcRenderer.invoke('luxshift:smartbulb:set-protocol', { protocol }),
     enable: (enabled) => ipcRenderer.invoke('luxshift:smartbulb:enable', { enabled }),
     getBulbs: () => ipcRenderer.invoke('luxshift:smartbulb:get-bulbs'),
-    control: (bulbId, action, params) => ipcRenderer.invoke('luxshift:smartbulb:control', { bulbId, action, params }),
-    applyWindDown: (intensity, transitionMs) => ipcRenderer.invoke('luxshift:smartbulb:apply-winddown', { intensity, transitionMs }),
-    restoreNormal: (transitionMs) => ipcRenderer.invoke('luxshift:smartbulb:restore-normal', { transitionMs }),
+    control: (bulbId, action, params) =>
+      ipcRenderer.invoke('luxshift:smartbulb:control', { bulbId, action, params }),
+    applyWindDown: (intensity, transitionMs) =>
+      ipcRenderer.invoke('luxshift:smartbulb:apply-winddown', { intensity, transitionMs }),
+    restoreNormal: (transitionMs) =>
+      ipcRenderer.invoke('luxshift:smartbulb:restore-normal', { transitionMs }),
     getStatus: () => ipcRenderer.invoke('luxshift:smartbulb:get-status')
   }
 });

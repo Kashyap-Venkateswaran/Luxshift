@@ -72,38 +72,74 @@ async function parseScheduleViaProxy(text, images = []) {
   if (userApiKey) {
     headers['x-user-api-key'] = userApiKey;
   }
+  // Add API key for authentication if configured
+  if (window.LUXSHIFT_CONFIG?.API_KEY) {
+    headers['x-api-key'] = window.LUXSHIFT_CONFIG.API_KEY;
+  }
 
   const body = { text };
   if (images.length > 0) {
     body.images = images;
   }
 
+  // Use configurable API URL
   const apiUrl = window.LUXSHIFT_CONFIG?.PARSE_SCHEDULE_URL || 'https://luxshift-api.onrender.com/parse-schedule';
 
-  const response = await fetch(apiUrl, {
-    method: 'POST',
-    headers,
-    body: JSON.stringify(body)
-  });
+  // Add timeout to prevent hanging
+  const controller = new AbortController();
+  const timeout = setTimeout(() => controller.abort(), 30000); // 30s timeout
 
-  const data = await response.json();
+  try {
+    const response = await fetch(apiUrl, {
+      method: 'POST',
+      headers,
+      body: JSON.stringify(body),
+      signal: controller.signal
+    });
+    clearTimeout(timeout);
 
-  if (!response.ok) {
-    throw new Error(data?.error || data?.details?.error || 'Proxy parsing failed.');
+    const data = await response.json();
+
+    if (!response.ok) {
+      // Handle specific error types
+      if (data.error === 'UNSUPPORTED_IMAGE_TYPE') {
+        throw new Error('Unsupported image format. Please use PNG, JPG, or WebP.');
+      } else if (data.error === 'IMAGE_TOO_LARGE') {
+        throw new Error(`Image too large. ${data.details}`);
+      } else if (data.error === 'IMAGE_LIMIT_EXCEEDED') {
+        throw new Error(data.details);
+      } else if (data.error === 'INVALID_IMAGE_DATA') {
+        throw new Error('Invalid image data. Please try another image.');
+      } else if (data.error === 'INVALID_BASE64') {
+        throw new Error('Invalid image format. Please try another image.');
+      } else {
+        throw new Error(data?.error || data?.details?.error || 'Proxy parsing failed.');
+      }
+    }
+
+    // Update key source status from response header
+    const keySource = response.headers.get('x-key-source');
+    updateKeySourceStatus(keySource);
+
+    return {
+      summary: data?.summary || '',
+      blocks: Array.isArray(data?.blocks) ? data.blocks : [],
+      confidence: typeof data?.confidence === 'number' ? data.confidence : 0.9,
+      reasons: Array.isArray(data?.reasons) ? data.reasons : [],
+      source: 'groq-proxy',
+      unavailable: false
+    };
+  } catch (error) {
+    clearTimeout(timeout);
+    // Handle specific error types
+    if (error.name === 'AbortError') {
+      throw new Error('Request timed out. Please try again.');
+    } else if (error.message.includes('Failed to fetch')) {
+      throw new Error('Could not connect to parsing service. Please check your internet connection.');
+    } else {
+      throw error;
+    }
   }
-
-  // Update key source status from response header
-  const keySource = response.headers.get('x-key-source');
-  updateKeySourceStatus(keySource);
-
-  return {
-    summary: data?.summary || '',
-    blocks: Array.isArray(data?.blocks) ? data.blocks : [],
-    confidence: typeof data?.confidence === 'number' ? data.confidence : 0.9,
-    reasons: Array.isArray(data?.reasons) ? data.reasons : [],
-    source: 'groq-proxy',
-    unavailable: false
-  };
 }
 
 function applyWindDownState(state) {
@@ -493,28 +529,46 @@ function wireUI() {
       const file = e.target.files[0];
       if (!file) return;
 
-      // Validate file type - PNG, JPG, JPEG, WebP, HEIC (Mac native)
-      const allowedTypes = ['image/png', 'image/jpeg', 'image/webp', 'image/heic', 'image/heif'];
+      // Validate file type - PNG, JPG, JPEG, WebP only (no HEIC/HEIF)
+      const allowedTypes = ['image/png', 'image/jpeg', 'image/webp'];
       if (!allowedTypes.includes(file.type)) {
-        settingsHint.textContent = 'Unsupported format. Use PNG, JPG, JPEG, WebP, or HEIC.';
+        settingsHint.textContent = 'Unsupported format. Use PNG, JPG, or WebP.';
         return;
       }
 
-      // Validate file size (max 10MB)
-      if (file.size > 10 * 1024 * 1024) {
-        settingsHint.textContent = 'Image too large. Maximum 10MB.';
+      // Validate file size (max 5MB)
+      if (file.size > 5 * 1024 * 1024) {
+        settingsHint.textContent = 'Image too large. Maximum 5MB.';
         return;
       }
 
+      settingsHint.textContent = 'Processing image...';
       const reader = new FileReader();
       reader.onload = (event) => {
-        uploadedImage = {
-          base64: event.target.result.split(',')[1],
-          mimeType: file.type
-        };
-        imagePreviewImg.src = event.target.result;
-        imagePreview.style.display = 'block';
-        settingsHint.textContent = 'Image uploaded. Ready to parse.';
+        try {
+          const result = event.target.result;
+          const commaIndex = result.indexOf(',');
+          if (commaIndex === -1) {
+            throw new Error('Invalid data URL format: no comma separator');
+          }
+          const base64Data = result.slice(commaIndex + 1);
+          if (!base64Data) {
+            throw new Error('Empty base64 data');
+          }
+          uploadedImage = {
+            base64: base64Data,
+            mimeType: file.type
+          };
+          imagePreviewImg.src = event.target.result;
+          imagePreview.style.display = 'block';
+          settingsHint.textContent = 'Image uploaded. Ready to parse.';
+        } catch (error) {
+          settingsHint.textContent = 'Failed to process image. Please try another file.';
+          console.error('Image processing error:', error);
+        }
+      };
+      reader.onerror = () => {
+        settingsHint.textContent = 'Failed to read image. Please try another file.';
       };
       reader.readAsDataURL(file);
     });
@@ -548,28 +602,46 @@ function wireUI() {
       const file = e.target.files[0];
       if (!file) return;
 
-      // Validate file type - PNG, JPG, JPEG, WebP, HEIC (Mac native)
-      const allowedTypes = ['image/png', 'image/jpeg', 'image/webp', 'image/heic', 'image/heif'];
+      // Validate file type - PNG, JPG, JPEG, WebP only (no HEIC/HEIF)
+      const allowedTypes = ['image/png', 'image/jpeg', 'image/webp'];
       if (!allowedTypes.includes(file.type)) {
-        settingsHint.textContent = 'Unsupported format. Use PNG, JPG, JPEG, WebP, or HEIC.';
+        settingsHint.textContent = 'Unsupported format. Use PNG, JPG, or WebP.';
         return;
       }
 
-      // Validate file size (max 10MB)
-      if (file.size > 10 * 1024 * 1024) {
-        settingsHint.textContent = 'Image too large. Maximum 10MB.';
+      // Validate file size (max 5MB)
+      if (file.size > 5 * 1024 * 1024) {
+        settingsHint.textContent = 'Image too large. Maximum 5MB.';
         return;
       }
 
+      settingsHint.textContent = 'Processing image...';
       const reader = new FileReader();
       reader.onload = (event) => {
-        lateChangesUploadedImage = {
-          base64: event.target.result.split(',')[1],
-          mimeType: file.type
-        };
-        lateChangesImagePreviewImg.src = event.target.result;
-        lateChangesImagePreview.style.display = 'block';
-        settingsHint.textContent = 'Late changes image uploaded. Ready to parse.';
+        try {
+          const result = event.target.result;
+          const commaIndex = result.indexOf(',');
+          if (commaIndex === -1) {
+            throw new Error('Invalid data URL format: no comma separator');
+          }
+          const base64Data = result.slice(commaIndex + 1);
+          if (!base64Data) {
+            throw new Error('Empty base64 data');
+          }
+          lateChangesUploadedImage = {
+            base64: base64Data,
+            mimeType: file.type
+          };
+          lateChangesImagePreviewImg.src = event.target.result;
+          lateChangesImagePreview.style.display = 'block';
+          settingsHint.textContent = 'Late changes image uploaded. Ready to parse.';
+        } catch (error) {
+          settingsHint.textContent = 'Failed to process image. Please try another file.';
+          console.error('Image processing error:', error);
+        }
+      };
+      reader.onerror = () => {
+        settingsHint.textContent = 'Failed to read image. Please try another file.';
       };
       reader.readAsDataURL(file);
     });
@@ -791,9 +863,21 @@ async function connectGoogleCalendar() {
   if (!window.luxshiftAPI?.calendar?.google?.connectInteractive) {
     throw new Error('Google Calendar integration not available in this build.');
   }
+
+  // Check if already connected - if so reuse existing tokens (no OAuth popup)
+  const connectedResult = await window.luxshiftAPI.calendar.google.isConnected();
+  if (connectedResult?.connected) {
+    calendarStatus.textContent = 'Google Calendar already connected — loading calendars…';
+    const result = await window.luxshiftAPI.calendar.google.connectInteractive();
+    if (!result?.ok) throw new Error(result?.error || 'Google Calendar connection failed.');
+    return result.calendars || [];
+  }
+
   calendarStatus.textContent = 'Opening browser for Google sign-in…';
   const result = await window.luxshiftAPI.calendar.google.connectInteractive();
-  if (!result?.ok) throw new Error(result?.error || 'Google Calendar connection failed.');
+  if (!result?.ok) {
+    throw new Error(result?.error || 'Google Calendar connection failed.');
+  }
   return result.calendars || [];
 }
 
@@ -801,51 +885,105 @@ async function connectAppleCalendar() {
   if (!window.luxshiftAPI?.calendar?.apple) {
     throw new Error('Apple Calendar integration not available in this build.');
   }
+
   calendarStatus.textContent = 'Checking Apple Calendar access…';
   const access = await window.luxshiftAPI.calendar.apple.checkAccess();
+
   if (!access?.hasAccess) {
-    throw new Error('Calendar access not granted. Go to System Settings → Privacy & Security → Calendars and enable LuxShift, then try again.');
+    throw new Error(
+      'Calendar access not granted. Go to System Settings → Privacy & Security → Calendars and enable LuxShift, then try again.'
+    );
   }
+
   const result = await window.luxshiftAPI.calendar.apple.listCalendars();
-  if (!result?.ok) throw new Error('Could not read Apple Calendar — make sure LuxShift has Calendars permission.');
+  if (!result?.ok) {
+    throw new Error(result?.error || 'Could not read Apple Calendar.');
+  }
+
   return result.calendars || [];
 }
 
-async function fetchCalendarEvents(selected) {
+async function connectNotionCalendar(token, databaseId) {
+  if (!window.luxshiftAPI?.calendar?.notion?.connect) {
+    throw new Error('Notion integration not available in this build.');
+  }
+
+  if (!token || !databaseId) {
+    throw new Error('Please enter your Notion integration token and database ID.');
+  }
+
+  calendarStatus.textContent = 'Connecting to Notion…';
+  const result = await window.luxshiftAPI.calendar.notion.connect(token, databaseId);
+
+  if (!result?.ok) {
+    throw new Error(result?.error || 'Notion connection failed.');
+  }
+
+  return result;
+}
+
+async function fetchCalendarEvents(selected, notionConfig = null) {
   const { startDate, endDate } = calendarWeekRange();
   const allEvents = [];
 
   if (selected.includes('google')) {
-    try {
-      const listResult = await window.luxshiftAPI.calendar.google.listCalendars();
-      const calIds = (listResult?.calendars || []).map(c => c.id).filter(Boolean);
-      if (calIds.length) {
-        const eventsResult = await window.luxshiftAPI.calendar.google.fetchEvents(calIds, startDate, endDate);
-        if (eventsResult?.ok) allEvents.push(...(eventsResult.events || []));
+    const listResult = await window.luxshiftAPI.calendar.google.listCalendars();
+    if (!listResult?.ok) {
+      throw new Error(listResult?.error || 'Could not load Google calendars.');
+    }
+
+    const calIds = (listResult.calendars || []).map((c) => c.id).filter(Boolean);
+    if (calIds.length > 0) {
+      const eventsResult = await window.luxshiftAPI.calendar.google.fetchEvents(calIds, startDate, endDate);
+      if (!eventsResult?.ok) {
+        throw new Error(eventsResult?.error || 'Could not fetch Google Calendar events.');
       }
-    } catch (e) {
-      console.warn('Google Calendar events error:', e.message);
+      allEvents.push(...(eventsResult.events || []));
     }
   }
 
   if (selected.includes('apple')) {
-    try {
-      const listResult = await window.luxshiftAPI.calendar.apple.listCalendars();
-      const calNames = (listResult?.calendars || []).map(c => c.name).filter(Boolean);
-      if (calNames.length) {
-        const eventsResult = await window.luxshiftAPI.calendar.apple.fetchEvents(calNames, startDate, endDate);
-        if (eventsResult?.ok) allEvents.push(...(eventsResult.events || []));
+    const listResult = await window.luxshiftAPI.calendar.apple.listCalendars();
+    if (!listResult?.ok) {
+      throw new Error(listResult?.error || 'Could not load Apple calendars.');
+    }
+
+    const calNames = (listResult.calendars || []).map((c) => c.name).filter(Boolean);
+    if (calNames.length > 0) {
+      const eventsResult = await window.luxshiftAPI.calendar.apple.fetchEvents(calNames, startDate, endDate);
+      if (!eventsResult?.ok) {
+        throw new Error(eventsResult?.error || 'Could not fetch Apple Calendar events.');
       }
-    } catch (e) {
-      console.warn('Apple Calendar events error:', e.message);
+      allEvents.push(...(eventsResult.events || []));
     }
   }
 
-  return allEvents;
+  if (selected.includes('notion')) {
+    const token = notionConfig?.token?.trim();
+    const databaseId = notionConfig?.databaseId?.trim();
+
+    if (!token || !databaseId) {
+      throw new Error('Notion is selected, but the token or database ID is missing.');
+    }
+
+    const eventsResult = await window.luxshiftAPI.calendar.notion.fetchEvents(
+      token,
+      databaseId,
+      startDate,
+      endDate
+    );
+
+    if (!eventsResult?.ok) {
+      throw new Error(eventsResult?.error || 'Could not fetch Notion events.');
+    }
+
+    allEvents.push(...(eventsResult.events || []));
+  }
+
+  return allEvents.sort((a, b) => new Date(a.start) - new Date(b.start));
 }
 
 if (googleCalendarChk && appleCalendarChk && notionChk && connectCalendarBtn && calendarStatus) {
-  // Notion fields visibility
   const notionFields = document.getElementById('notionFields');
   const notionTokenInput = document.getElementById('notionTokenInput');
   const notionDatabaseIdInput = document.getElementById('notionDatabaseIdInput');
@@ -868,32 +1006,76 @@ if (googleCalendarChk && appleCalendarChk && notionChk && connectCalendarBtn && 
     }
 
     connectCalendarBtn.disabled = true;
+    calendarStatus.textContent = 'Connecting...';
 
     try {
-      if (selected.includes('google')) await connectGoogleCalendar();
-      if (selected.includes('apple')) await connectAppleCalendar();
-      if (selected.includes('notion')) {
-        // Get Notion credentials from input fields
-        const token = notionTokenInput?.value?.trim();
-        const databaseId = notionDatabaseIdInput?.value?.trim();
-        if (!token || !databaseId) {
-          calendarStatus.textContent = 'Notion: Please enter your integration token and database ID.';
-          connectCalendarBtn.disabled = false;
-          return;
-        }
-        calendarStatus.textContent = 'Connecting to Notion…';
-        const result = await window.luxshiftAPI.calendar.notion.connect(token, databaseId);
-        if (!result?.ok) throw new Error(result?.error || 'Notion connection failed.');
-        calendarStatus.textContent = 'Notion connected successfully!';
+      let notionConfig = null;
+
+      // Only connect Google if it's selected
+      if (selected.includes('google')) {
+        calendarStatus.textContent = 'Connecting to Google Calendar...';
+        await connectGoogleCalendar();
       }
 
-      if (selected.length === 0) return;
+      // Only connect Apple if it's selected
+      if (selected.includes('apple')) {
+        calendarStatus.textContent = 'Connecting to Apple Calendar...';
+        await connectAppleCalendar();
+      }
 
-      calendarStatus.textContent = 'Fetching events for the next 7 days…';
-      const events = await fetchCalendarEvents(selected);
-      calendarStatus.textContent = events.length
-        ? `Connected — ${events.length} event${events.length === 1 ? '' : 's'} found in the next 7 days.`
-        : 'Connected — no events found in the next 7 days.';
+      // Only connect Notion if it's selected
+      if (selected.includes('notion')) {
+        notionConfig = {
+          token: notionTokenInput?.value || '',
+          databaseId: notionDatabaseIdInput?.value || ''
+        };
+        if (!notionConfig.token || !notionConfig.databaseId) {
+          throw new Error('Please enter both Notion token and database ID.');
+        }
+        calendarStatus.textContent = 'Connecting to Notion...';
+        await connectNotionCalendar(notionConfig.token, notionConfig.databaseId);
+      }
+
+      calendarStatus.textContent = 'Fetching events for the next 7 days...';
+      const events = await fetchCalendarEvents(selected, notionConfig);
+
+      if (events.length === 0) {
+        calendarStatus.textContent = 'Connected — no events found in the next 7 days.';
+      } else {
+        // Convert events to a natural-language plan and put it in the schedule input
+        const eventLines = events.map(ev => {
+          const start = ev.start ? new Date(ev.start) : null;
+          const end = ev.end ? new Date(ev.end) : null;
+          const timeStr = start
+            ? start.toLocaleTimeString([], { hour: 'numeric', minute: '2-digit', hour12: true })
+            : '';
+          const endStr = end
+            ? ` - ${end.toLocaleTimeString([], { hour: 'numeric', minute: '2-digit', hour12: true })}`
+            : '';
+          return `${timeStr}${endStr}: ${ev.title || 'Event'}`;
+        }).join('\n');
+
+        calendarStatus.textContent = `Connected — ${events.length} event${events.length === 1 ? '' : 's'} imported. Review the schedule input and click Parse My Day.`;
+
+        // Auto-parse the calendar events if there's no existing plan
+        if (!input.value.trim()) {
+          input.value = eventLines;
+          // Auto-trigger parsing if the input was empty
+          setTimeout(() => {
+            if (!input.value.trim() || input.value === eventLines) {
+              handleParse();
+            }
+          }, 500);
+        } else if (lateChangesInput) {
+          // If there's already text, add to late changes
+          const existing = lateChangesInput.value.trim();
+          lateChangesInput.value = existing
+            ? `${existing}\n\nCalendar events:\n${eventLines}`
+            : `Calendar events:\n${eventLines}`;
+        }
+
+        calendarStatus.textContent = `Connected — ${events.length} event${events.length === 1 ? '' : 's'} imported. Review the schedule input and click Parse My Day.`;
+      }
     } catch (e) {
       calendarStatus.textContent = `Error: ${e.message}`;
       console.error('Calendar connect error:', e);
@@ -902,7 +1084,6 @@ if (googleCalendarChk && appleCalendarChk && notionChk && connectCalendarBtn && 
     }
   });
 }
-
 // ---------- Core Helper Functions ----------
 
 function updateAzureFieldsVisibility(provider) {
@@ -1206,6 +1387,9 @@ async function handleParse() {
     </div>
   `;
   modeValue.textContent = 'Parsing your current schedule';
+  settingsHint.textContent = 'Processing your schedule...';
+  parseBtn.disabled = true;
+  parseBtn.textContent = 'Processing...';
 
   const parseText = [
     baseText ? `Current plan: ${baseText}` : '',
@@ -1220,18 +1404,71 @@ async function handleParse() {
     const images = [];
     if (uploadedImage) images.push(uploadedImage);
     if (lateChangesUploadedImage) images.push(lateChangesUploadedImage);
+
     const result = await parseScheduleViaProxy(parseText, images);
     renderParseResult(result);
     await persistCurrentSchedule(result);
+    settingsHint.textContent = 'Schedule parsed successfully.';
   } catch (error) {
-    preview.innerHTML = `
-      <div class="timeline-empty">
-        <div class="timeline-empty-icon">!</div>
-        <strong>LuxShift could not build the timeline.</strong>
-        <p>${escapeHtml(error?.message || 'An unknown parsing issue occurred.')}</p>
-      </div>
-    `;
+    console.error('Parsing error:', error);
+    let errorMessage = error.message;
+
+    // Handle specific error types
+    if (errorMessage.includes('Unsupported image format')) {
+      preview.innerHTML = `
+        <div class="timeline-empty">
+          <div class="timeline-empty-icon">!</div>
+          <strong>Unsupported image format.</strong>
+          <p>Please use PNG, JPG, or WebP images. HEIC/HEIF images are not supported.</p>
+        </div>
+      `;
+    } else if (errorMessage.includes('Image too large')) {
+      preview.innerHTML = `
+        <div class="timeline-empty">
+          <div class="timeline-empty-icon">!</div>
+          <strong>Image too large.</strong>
+          <p>${errorMessage}</p>
+        </div>
+      `;
+    } else if (errorMessage.includes('Maximum 2 images')) {
+      preview.innerHTML = `
+        <div class="timeline-empty">
+          <div class="timeline-empty-icon">!</div>
+          <strong>Too many images.</strong>
+          <p>${errorMessage}</p>
+        </div>
+      `;
+    } else if (errorMessage.includes('Could not connect')) {
+      preview.innerHTML = `
+        <div class="timeline-empty">
+          <div class="timeline-empty-icon">!</div>
+          <strong>Connection failed.</strong>
+          <p>${errorMessage}</p>
+        </div>
+      `;
+    } else if (errorMessage.includes('Request timed out')) {
+      preview.innerHTML = `
+        <div class="timeline-empty">
+          <div class="timeline-empty-icon">!</div>
+          <strong>Request timed out.</strong>
+          <p>${errorMessage}</p>
+        </div>
+      `;
+    } else {
+      preview.innerHTML = `
+        <div class="timeline-empty">
+          <div class="timeline-empty-icon">!</div>
+          <strong>LuxShift could not build the timeline.</strong>
+          <p>${escapeHtml(errorMessage || 'An unknown parsing issue occurred.')}</p>
+        </div>
+      `;
+    }
+
     modeValue.textContent = 'Parse unavailable';
+    settingsHint.textContent = 'Failed to parse schedule. Please try again.';
+  } finally {
+    parseBtn.disabled = false;
+    parseBtn.textContent = 'Parse My Day';
   }
 }
 

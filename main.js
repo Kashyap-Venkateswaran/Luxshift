@@ -1,11 +1,5 @@
 /**
  * LuxShift – Main Process
- *
- * Single-process Electron app with:
- *  - Wind-down engine (60s tick): computes intensity, broadcasts state, controls Night Shift via Swift binary
- *  - Sunlight notification engine: morning/afternoon nudges with weather awareness
- *  - System tray/menu bar for background operation
- *  - IPC handlers for preferences, schedules, permissions, location
  */
 
 const {
@@ -22,7 +16,23 @@ const {
 } = require('electron');
 
 const path = require('path');
+const os = require('os');
+const fs = require('fs');
+const { execFile } = require('child_process');
+const { promisify } = require('util');
 const PreferencesStore = require('electron-store').default;
+const SunCalc = require('suncalc');
+
+const execFileAsync = promisify(execFile);
+
+// Safety net: a synchronous child_process call during app quit (or any other
+// late-stage teardown) can occasionally throw in a way that bypasses local
+// try/catch (e.g. an EIO write error surfacing as a process-level exception).
+// Log it instead of letting it hard-crash the app.
+process.on('uncaughtException', (error) => {
+  console.error('[Main] Uncaught exception:', error);
+});
+
 const {
   getActiveSchedule,
   saveActiveSchedule,
@@ -31,8 +41,7 @@ const {
   getUserApiKey,
   saveUserApiKey,
   deleteUserApiKey,
-  clearAllUserData,
-  dateKeyFromDate
+  clearAllUserData
 } = require('./schedule-store.js');
 
 const { GoogleCalendarClient } = require('./calendar/google.js');
@@ -43,6 +52,9 @@ const { KeepAlivePinger } = require('./keep-alive.js');
 const { SmartBulbManager } = require('./smart-bulb.js');
 
 const GITHUB_REPO = 'LuxshiftOfficial/Luxshift';
+const MIN_BRIGHTNESS = 0.35;
+const WIND_DOWN_MINUTES_DEFAULT = 90;
+const WEATHER_CACHE_MS = 30 * 60 * 1000;
 
 let preferencesStore;
 let mainWindow = null;
@@ -51,21 +63,25 @@ let isQuitting = false;
 let windDownTickInterval = null;
 let keepAlivePinger = null;
 let smartBulbManager = null;
+let permissionPollInterval = null;
 
-// ---- Swift NightShift binary ----
+const sunlightFiredToday = new Set();
+let lastNotificationDate = null;
+let weatherCache = null;
+let weatherCacheTime = 0;
+
 function getNightshiftBin() {
   const bundled = path.join(process.resourcesPath || __dirname, 'assets', 'nightshift-control');
   const dev = path.join(__dirname, 'assets', 'nightshift-control');
-  const home = path.join(require('os').homedir(), 'nightshift-control');
-  const fs = require('fs');
+  const home = path.join(os.homedir(), 'nightshift-control');
+
   if (fs.existsSync(bundled)) return bundled;
   if (fs.existsSync(dev)) return dev;
   return home;
 }
-const NIGHTSHIFT_BIN = getNightshiftBin();
-const MIN_BRIGHTNESS = 0.35;
 
-// ---- Default preferences ----
+const NIGHTSHIFT_BIN = getNightshiftBin();
+
 const DEFAULT_PREFERENCES = {
   bedtimeTarget: '00:30',
   wakeTarget: '07:30',
@@ -74,10 +90,12 @@ const DEFAULT_PREFERENCES = {
   preferredLocation: null,
   timeFormat: '12h',
   timeFormatChosen: false,
-  googleCalendarTokens: null
+  googleCalendarTokens: null,
+  notionConfig: null,
+  smartBulbEnabled: false,
+  smartBulbProtocol: null
 };
 
-// ---- Tray icon ----
 function getTrayIcon() {
   const templatePath = path.join(__dirname, 'assets', 'tray-iconTemplate.png');
   const alternatePath = path.join(__dirname, 'assets', 'tray-icon.png');
@@ -90,18 +108,15 @@ function getTrayIcon() {
   }
 
   const svg = `
-    <svg width="18" height="18" viewBox="0 0 18 18" xmlns="http://www.w3.org/2000/svg">
-      <rect x="2" y="2" width="14" height="14" rx="4" fill="white"/>
-      <path d="M6 5.4h1.5v5.1h4.7V12H6V5.4Z" fill="black"/>
+    <svg xmlns="http://www.w3.org/2000/svg" width="18" height="18" viewBox="0 0 18 18">
+      <rect x="2" y="2" width="14" height="14" rx="4" fill="black"/>
+      <circle cx="9" cy="9" r="3.4" fill="white"/>
     </svg>
   `.trim();
 
-  return nativeImage.createFromDataURL(
-    `data:image/svg+xml;charset=utf-8,${encodeURIComponent(svg)}`
-  );
+  return nativeImage.createFromDataURL(`data:image/svg+xml;charset=utf-8,${encodeURIComponent(svg)}`);
 }
 
-// ---- Window & Tray management ----
 function createWindow() {
   if (mainWindow && !mainWindow.isDestroyed()) return mainWindow;
 
@@ -136,7 +151,7 @@ function createWindow() {
       try {
         new Notification({
           title: 'LuxShift is still running',
-          body: 'LuxShift moved to the menu bar so wind‑down support can continue.'
+          body: 'LuxShift moved to the menu bar so wind-down support can continue.'
         }).show();
       } catch (_) {}
     }
@@ -164,9 +179,9 @@ function hideMainWindow() {
 function toggleMainWindow() {
   if (mainWindow && !mainWindow.isDestroyed() && mainWindow.isVisible()) {
     hideMainWindow();
-    return;
+  } else {
+    showMainWindow();
   }
-  showMainWindow();
 }
 
 function getAllWindows() {
@@ -175,11 +190,12 @@ function getAllWindows() {
 
 function broadcast(channel, payload) {
   for (const win of getAllWindows()) {
-    win.webContents.send(channel, payload);
+    try {
+      win.webContents.send(channel, payload);
+    } catch (_) {}
   }
 }
 
-// ---- Preference handling ----
 function getPreferences() {
   return {
     ...DEFAULT_PREFERENCES,
@@ -191,18 +207,23 @@ function normalizeHHMM(value, fallback) {
   if (typeof value !== 'string') return fallback;
   const match = value.trim().match(/^(\d{1,2}):(\d{2})$/);
   if (!match) return fallback;
+
   const hours = Number(match[1]);
   const minutes = Number(match[2]);
+
   if (!Number.isInteger(hours) || !Number.isInteger(minutes)) return fallback;
   if (hours < 0 || hours > 23 || minutes < 0 || minutes > 59) return fallback;
+
   return `${String(hours).padStart(2, '0')}:${String(minutes).padStart(2, '0')}`;
 }
 
 function normalizeLocation(value) {
   if (!value || typeof value !== 'object') return null;
+
   const latitude = Number(value.latitude);
   const longitude = Number(value.longitude);
   if (!Number.isFinite(latitude) || !Number.isFinite(longitude)) return null;
+
   return {
     id: typeof value.id === 'string' ? value.id : `${latitude},${longitude}`,
     name: String(value.name || '').trim(),
@@ -222,6 +243,7 @@ function buildSafePreferences(payload = {}) {
       : normalizeLocation(payload?.preferredLocation) || current.preferredLocation;
 
   return {
+    ...current,
     bedtimeTarget: normalizeHHMM(payload?.bedtimeTarget, current.bedtimeTarget),
     wakeTarget: normalizeHHMM(payload?.wakeTarget, current.wakeTarget),
     windDownMinutes: Math.min(
@@ -243,7 +265,6 @@ function buildSafePreferences(payload = {}) {
   };
 }
 
-// ---- Permission helpers ----
 function hasAccessibilityPermission() {
   if (process.platform !== 'darwin') return true;
   try {
@@ -266,52 +287,44 @@ async function openAccessibilitySettings() {
     'x-apple.systempreferences:com.apple.Privacy-Accessibility',
     'x-apple.systempreferences:com.apple.preference.security'
   ];
+
   for (const url of urls) {
-    try { await shell.openExternal(url); return; } catch (_) {}
+    try {
+      await shell.openExternal(url);
+      return;
+    } catch (_) {}
   }
 }
 
-let _permissionPollInterval = null;
 function startPermissionPolling(win) {
-  if (_permissionPollInterval) return;
-  _permissionPollInterval = setInterval(() => {
+  if (permissionPollInterval) return;
+
+  permissionPollInterval = setInterval(() => {
     if (!win || win.isDestroyed()) {
-      clearInterval(_permissionPollInterval);
-      _permissionPollInterval = null;
+      clearInterval(permissionPollInterval);
+      permissionPollInterval = null;
       return;
     }
+
     const hasPermission = hasAccessibilityPermission();
     win.webContents.send('luxshift:permission-status', { accessibility: hasPermission });
+
     if (hasPermission) {
-      clearInterval(_permissionPollInterval);
-      _permissionPollInterval = null;
+      clearInterval(permissionPollInterval);
+      permissionPollInterval = null;
     }
   }, 2000);
 }
-
-// ---- Wind-down engine (moved from display-engine.js) ----
-const WIND_DOWN_MINUTES_DEFAULT = 90;
-const SUNLIGHT_WINDOWS = [
-  { id: 'morning', startH: 6, endH: 10, label: 'morning sunlight', message: 'Step outside for 10–15 minutes of morning sunlight. This anchors your circadian clock and makes tonight\'s sleep more effective.' },
-  { id: 'afternoon', startH: 14, endH: 16, label: 'afternoon sunlight', message: 'A short walk outside now helps extend your afternoon alertness and prepares your body for a natural wind-down tonight.' }
-];
-
-const _sunlightFiredToday = new Set();
-let _lastNotificationDate = null;
-let _weatherCache = null;
-let _weatherCacheTime = 0;
-const WEATHER_CACHE_MS = 30 * 60 * 1000;
-
-// SunCalc for sunrise/sunset
-const SunCalc = require('suncalc');
 
 function parseHHMMtoMinutes(value) {
   if (!value || typeof value !== 'string') return null;
   const match = value.match(/^(\d{1,2}):(\d{2})$/);
   if (!match) return null;
+
   const h = Number(match[1]);
   const m = Number(match[2]);
   if (!Number.isFinite(h) || !Number.isFinite(m)) return null;
+
   return h * 60 + m;
 }
 
@@ -327,6 +340,7 @@ function resolveBedtimeMinutes(prefs, schedule) {
     const sleepBlocks = schedule.parsedBlocks.filter(
       (b) => b.type === 'sleep' || b.type === 'unwind'
     );
+
     const starts = sleepBlocks
       .map((b) => b.start)
       .filter(Boolean)
@@ -334,11 +348,11 @@ function resolveBedtimeMinutes(prefs, schedule) {
       .filter((m) => m !== null);
 
     if (starts.length) return Math.max(...starts);
+  }
 
-    if (schedule.endTime) {
-      const m = parseHHMMtoMinutes(schedule.endTime);
-      if (m !== null) return m;
-    }
+  if (schedule?.endTime) {
+    const m = parseHHMMtoMinutes(schedule.endTime);
+    if (m !== null) return m;
   }
 
   if (prefs?.bedtimeTarget) {
@@ -348,27 +362,33 @@ function resolveBedtimeMinutes(prefs, schedule) {
   return null;
 }
 
+function makeNormalState(windDownMinutes, bedtimeLabel = null) {
+  return {
+    intensity: 0,
+    minutesToBedtime: null,
+    windDownMinutes,
+    targetBrightness: 1.0,
+    phase: 'normal',
+    bedtimeLabel
+  };
+}
+
 function computeWindDownState(prefs, schedule) {
   const now = new Date();
   const nowMinutes = now.getHours() * 60 + now.getMinutes();
   const windDownMinutes = Number(prefs?.windDownMinutes) || WIND_DOWN_MINUTES_DEFAULT;
-
   const bedtimeMinutes = resolveBedtimeMinutes(prefs, schedule);
 
-  if (bedtimeMinutes === null) {
-    return makeNormalState(windDownMinutes);
-  }
+  if (bedtimeMinutes === null) return makeNormalState(windDownMinutes);
 
   let minutesToBedtime = bedtimeMinutes - nowMinutes;
 
-  // Handle midnight crossing
   if (minutesToBedtime < -(24 * 60 - windDownMinutes)) {
     minutesToBedtime += 24 * 60;
   }
 
   const bedtimeLabel = minutesToHHMM(bedtimeMinutes);
 
-  // Past bedtime — keep Night Shift on for 30 min grace
   if (minutesToBedtime < 0 && minutesToBedtime >= -30) {
     return {
       intensity: 1.0,
@@ -380,7 +400,6 @@ function computeWindDownState(prefs, schedule) {
     };
   }
 
-  // More than 30 mins past bedtime — reset
   if (minutesToBedtime < -30) {
     return makeNormalState(windDownMinutes, bedtimeLabel);
   }
@@ -396,10 +415,8 @@ function computeWindDownState(prefs, schedule) {
     };
   }
 
-  // Non-linear biological curve: easeInQuad
   const progress = 1 - (minutesToBedtime / windDownMinutes);
   const intensity = progress * progress;
-
   const targetBrightness = 1.0 - (intensity * (1.0 - MIN_BRIGHTNESS));
 
   return {
@@ -412,20 +429,9 @@ function computeWindDownState(prefs, schedule) {
   };
 }
 
-function makeNormalState(windDownMinutes, bedtimeLabel = null) {
-  return {
-    intensity: 0,
-    minutesToBedtime: null,
-    windDownMinutes,
-    targetBrightness: 1.0,
-    phase: 'normal',
-    bedtimeLabel
-  };
-}
-
-// ---- Display control (Swift binary) ----
 async function applyNightShift(strength) {
   if (process.platform !== 'darwin') return;
+  if (!fs.existsSync(NIGHTSHIFT_BIN)) return;
 
   try {
     if (strength <= 0) {
@@ -433,39 +439,36 @@ async function applyNightShift(strength) {
     } else {
       await execFileAsync(NIGHTSHIFT_BIN, ['on', String(strength)]);
     }
-  } catch (_) {
-    // Binary not available — in-app overlay still works
-  }
+  } catch (_) {}
 }
 
 async function setBrightness(level) {
+  if (process.platform !== 'darwin') return;
+
   const clamped = Math.max(MIN_BRIGHTNESS, Math.min(1.0, level));
   try {
     await execFileAsync('osascript', [
       '-e',
-      `tell application "System Events" to tell process "SystemUIServer" to set value of slider 1 of menu bar item "Brightness" of menu bar 2 to ${clamped}`
+      `tell application "System Events" to tell process "SystemUIServer" to set value of slider 1 of group 1 of window 1 of application process "ControlCenter" to ${clamped}`
     ]);
   } catch (_) {}
 }
 
-const { execFile } = require('child_process');
-const { promisify } = require('util');
-const execFileAsync = promisify(execFile);
-
-// ---- Sunlight notifications ----
 async function fetchWeather(coords) {
   const now = Date.now();
-  if (_weatherCache && now - _weatherCacheTime < WEATHER_CACHE_MS) {
-    return _weatherCache;
+  if (weatherCache && now - weatherCacheTime < WEATHER_CACHE_MS) {
+    return weatherCache;
   }
+
   try {
-    const url = `https://api.open-meteo.com/v1/forecast?latitude=${coords.latitude}&longitude=${coords.longitude}&current=cloudcover,is_day,weathercode&timezone=auto`;
+    const url = `https://api.open-meteo.com/v1/forecast?latitude=${coords.latitude}&longitude=${coords.longitude}&current=cloud_cover,is_day,weather_code&timezone=auto`;
     const res = await fetch(url);
     if (!res.ok) return null;
+
     const data = await res.json();
-    _weatherCache = data?.current || null;
-    _weatherCacheTime = now;
-    return _weatherCache;
+    weatherCache = data?.current || null;
+    weatherCacheTime = now;
+    return weatherCache;
   } catch (_) {
     return null;
   }
@@ -473,6 +476,7 @@ async function fetchWeather(coords) {
 
 function getSunriseSunset(coords) {
   if (!coords?.latitude || !coords?.longitude) return null;
+
   const times = SunCalc.getTimes(new Date(), coords.latitude, coords.longitude);
   return {
     sunriseMinutes: times.sunrise.getHours() * 60 + times.sunrise.getMinutes(),
@@ -484,9 +488,9 @@ function getSunriseSunset(coords) {
 function getWeatherAdvice(weather) {
   if (!weather) return { canGoOut: true, qualifier: '', weatherNote: '' };
 
-  const cloudcover = Number(weather.cloudcover ?? 0);
+  const cloudCover = Number(weather.cloud_cover ?? weather.cloudcover ?? 0);
   const isDay = Number(weather.is_day ?? 1);
-  const code = Number(weather.weathercode ?? 0);
+  const code = Number(weather.weather_code ?? weather.weathercode ?? 0);
 
   const isRaining = (code >= 61 && code <= 67) || (code >= 80 && code <= 82) || code >= 95;
   const isSnowing = code >= 71 && code <= 77;
@@ -494,22 +498,26 @@ function getWeatherAdvice(weather) {
   if (!isDay) return { canGoOut: false, qualifier: 'after dark', weatherNote: 'Sun has set — wait for tomorrow morning.' };
   if (isRaining) return { canGoOut: false, qualifier: 'rainy', weatherNote: 'It is raining right now. Try to get light near a bright window instead.' };
   if (isSnowing) return { canGoOut: false, qualifier: 'snowy', weatherNote: 'Snowing outside — a bright window will help, or step out briefly if safe.' };
-  if (cloudcover > 85) return { canGoOut: true, qualifier: 'overcast', weatherNote: 'Heavy cloud cover today — still go outside, overcast light still has circadian benefit, just stay out a bit longer (20 mins).' };
-  if (cloudcover > 60) return { canGoOut: true, qualifier: 'partly cloudy', weatherNote: 'Partly cloudy — outdoor light still works well. Aim for 15 minutes.' };
+  if (cloudCover > 85) return { canGoOut: true, qualifier: 'overcast', weatherNote: 'Heavy cloud cover today — outdoor light still helps, just stay out a bit longer.' };
+  if (cloudCover > 60) return { canGoOut: true, qualifier: 'partly cloudy', weatherNote: 'Partly cloudy — outdoor light still works well. Aim for 15 minutes.' };
 
   return { canGoOut: true, qualifier: 'clear', weatherNote: 'Good conditions — 10 minutes outside is enough.' };
 }
 
 function isInWorkBlock(schedule, nowMinutes) {
   if (!schedule?.parsedBlocks?.length) return false;
+
   for (const block of schedule.parsedBlocks) {
     if (block.type !== 'work') continue;
+
     const start = parseHHMMtoMinutes(block.start);
     const end = parseHHMMtoMinutes(block.end);
+
     if (start !== null && end !== null && nowMinutes >= start && nowMinutes <= end) {
       return true;
     }
   }
+
   return false;
 }
 
@@ -527,147 +535,127 @@ async function checkSunlightNotifications(prefs, schedule) {
   const todayKey = `${now.getFullYear()}-${now.getMonth()}-${now.getDate()}`;
   const nowMinutes = now.getHours() * 60 + now.getMinutes();
 
-  // Reset fired set at start of each new day
-  if (_lastNotificationDate !== todayKey) {
-    _sunlightFiredToday.clear();
-    _lastNotificationDate = todayKey;
+  if (lastNotificationDate !== todayKey) {
+    sunlightFiredToday.clear();
+    lastNotificationDate = todayKey;
   }
 
   const coords = prefs?.preferredLocation || null;
   const wakeTarget = prefs?.wakeTarget || '07:30';
-  const wakeMinutes = parseHHMMtoMinutes(wakeTarget) || 7 * 60 + 30;
+  const wakeMinutes = parseHHMMtoMinutes(wakeTarget) || 450;
 
-  // Get sunrise for this location
   const sunTimes = coords ? getSunriseSunset(coords) : null;
-  const sunriseMinutes = sunTimes?.sunriseMinutes ?? 6 * 60;
-  const goldenHourEnd = sunTimes?.goldenHourEndMinutes ?? 8 * 60;
+  const sunriseMinutes = sunTimes?.sunriseMinutes ?? 360;
+  const goldenHourEnd = sunTimes?.goldenHourEndMinutes ?? 480;
 
-  // Morning window: starts at LATER of (wake time) or (sunrise), ends 2h later
   const morningStart = Math.max(wakeMinutes, sunriseMinutes);
   const morningEnd = morningStart + 120;
-
-  // Afternoon window: 5–7 hours after wake
   const afternoonStart = wakeMinutes + 5 * 60;
   const afternoonEnd = wakeMinutes + 7 * 60;
 
-  // Fetch weather once for both checks
   const weather = coords ? await fetchWeather(coords) : null;
   const { canGoOut, qualifier, weatherNote } = getWeatherAdvice(weather);
 
-  // Morning nudge
   const morningId = `${todayKey}-morning`;
   if (
-    !_sunlightFiredToday.has(morningId) &&
+    !sunlightFiredToday.has(morningId) &&
     nowMinutes >= morningStart &&
     nowMinutes <= morningEnd &&
     !isInWorkBlock(schedule, nowMinutes)
   ) {
     const isGoldenHour = nowMinutes <= goldenHourEnd;
-    const goldenNote = isGoldenHour ? ' The golden hour light right now is especially powerful for circadian anchoring.' : '';
-
+    const goldenNote = isGoldenHour ? ' The golden hour light right now is especially powerful.' : '';
     const body = canGoOut
-      ? `Step outside for 10–15 minutes now. Morning sunlight triggers your cortisol peak and locks in tonight's melatonin timing. ${weatherNote}${goldenNote}`
-      : `${weatherNote} Try to sit near your brightest window for 15 minutes — even indirect morning light helps anchor your clock.`;
+      ? `Step outside for 10–15 minutes now. ${weatherNote}${goldenNote}`
+      : `${weatherNote} Try to sit near your brightest window for 15 minutes.`;
 
-    sendSunlightNotification({
+    const payload = {
       id: morningId,
-      title: `☀️ Morning sunlight${qualifier ? ' (' + qualifier + ')' : ''}`,
+      title: `☀️ Morning sunlight${qualifier ? ` (${qualifier})` : ''}`,
       body,
       canGoOut
-    });
+    };
 
-    // Also show system notification
+    sendSunlightNotification(payload);
     if (Notification.isSupported()) {
-      try {
-        new Notification({ title: `☀️ Morning sunlight${qualifier ? ' (' + qualifier + ')' : ''}`, body }).show();
-      } catch (_) {}
+      try { new Notification({ title: payload.title, body }).show(); } catch (_) {}
     }
-
-    _sunlightFiredToday.add(morningId);
+    sunlightFiredToday.add(morningId);
   }
 
-  // Afternoon nudge
   const afternoonId = `${todayKey}-afternoon`;
   if (
-    !_sunlightFiredToday.has(afternoonId) &&
+    !sunlightFiredToday.has(afternoonId) &&
     nowMinutes >= afternoonStart &&
     nowMinutes <= afternoonEnd &&
     !isInWorkBlock(schedule, nowMinutes)
   ) {
     const body = canGoOut
-      ? `A 10-minute walk outside now extends your afternoon alertness and helps your melatonin rise at the right time tonight. ${weatherNote}`
-      : `${weatherNote} Step near a bright window for a few minutes — your eyes need the light signal even if you cannot go outside.`;
+      ? `A 10-minute walk outside now extends your afternoon alertness. ${weatherNote}`
+      : `${weatherNote} Step near a bright window for a few minutes.`;
 
-    sendSunlightNotification({
+    const payload = {
       id: afternoonId,
-      title: `🌤️ Afternoon light nudge${qualifier ? ' (' + qualifier + ')' : ''}`,
+      title: `🌤️ Afternoon light nudge${qualifier ? ` (${qualifier})` : ''}`,
       body,
       canGoOut
-    });
+    };
 
+    sendSunlightNotification(payload);
     if (Notification.isSupported()) {
-      try {
-        new Notification({ title: `🌤️ Afternoon light nudge${qualifier ? ' (' + qualifier + ')' : ''}`, body }).show();
-      } catch (_) {}
+      try { new Notification({ title: payload.title, body }).show(); } catch (_) {}
     }
-
-    _sunlightFiredToday.add(afternoonId);
+    sunlightFiredToday.add(afternoonId);
   }
 }
 
-// ---- Wind-down tick loop ----
 function pushStateToRenderer(state) {
-  if (!mainWindow || mainWindow.isDestroyed()) return;
-  try {
-    mainWindow.webContents.send('luxshift:winddown-state', state);
-  } catch (_) {}
+  broadcast('luxshift:winddown-state', state);
+  updateTrayMenu(state);
 }
 
 async function applyDisplayAdaptation(intensity) {
   if (process.platform !== 'darwin') return;
 
-  // Safety: Only apply Night Shift if intensity is actually > 0
   if (intensity <= 0) {
     await applyNightShift(0);
     await setBrightness(1.0);
     return;
   }
 
-  // Map intensity (0–1) to Night Shift strength (0.05–0.72)
   const strength = parseFloat((0.05 + intensity * 0.67).toFixed(3));
   await applyNightShift(strength);
 
-  // Brightness dims more gently — only starts dropping past 50% intensity
   const brightnessIntensity = Math.max(0, (intensity - 0.5) * 2);
   const targetBrightness = 1.0 - (brightnessIntensity * (1.0 - MIN_BRIGHTNESS));
   await setBrightness(targetBrightness);
 }
 
 function runWindDownTick() {
-  if (!mainWindow || mainWindow.isDestroyed()) return;
-
   const prefs = getPreferences();
   const scheduleResult = getActiveSchedule();
   const schedule = scheduleResult?.schedule || null;
 
-  // Wind-down
   const state = computeWindDownState(prefs, schedule);
   pushStateToRenderer(state);
-  applyDisplayAdaptation(state.intensity);
+  applyDisplayAdaptation(state.intensity).catch(() => {});
 
-  // Smart bulb integration - apply wind-down state to bulbs
   if (smartBulbManager?.enabled && smartBulbManager?.activeController) {
     smartBulbManager.onWindDownTick(state).catch(() => {});
   }
 
-  // Sunlight notifications (async — fetches weather)
-  checkSunlightNotifications(prefs, schedule);
+  checkSunlightNotifications(prefs, schedule).catch(() => {});
 }
 
 function startWindDownTick() {
-  // Don't run immediately - Night Shift is already turned OFF at startup (line 690).
-  // The first interval tick will compute the correct wind-down state and apply Night Shift only if intensity > 0.
-  windDownTickInterval = setInterval(runWindDownTick, 60 * 1000);
+  if (windDownTickInterval) return;
+  // Delay first tick by 5s so startup applyNightShift(0) runs first
+  // and we don't immediately flip Night Shift on if bedtime is near
+  setTimeout(() => {
+    if (!windDownTickInterval) return; // stopped before first tick
+    runWindDownTick();
+    windDownTickInterval = setInterval(runWindDownTick, 60 * 1000);
+  }, 5000);
 }
 
 function stopWindDownTick() {
@@ -675,11 +663,9 @@ function stopWindDownTick() {
     clearInterval(windDownTickInterval);
     windDownTickInterval = null;
   }
-  // Turn off Night Shift on quit
-  applyNightShift(0);
+  applyNightShift(0).catch(() => {});
 }
 
-// Synchronous snapshot for tray / immediate UI refresh
 function getCurrentWindDownState() {
   const prefs = getPreferences();
   const scheduleResult = getActiveSchedule();
@@ -687,11 +673,148 @@ function getCurrentWindDownState() {
   return computeWindDownState(prefs, schedule);
 }
 
-// ---- App lifecycle ----
+async function checkForUpdates(showFeedback = false) {
+  try {
+    const response = await fetch(`https://api.github.com/repos/${GITHUB_REPO}/releases/latest`, {
+      headers: { Accept: 'application/vnd.github+json' }
+    });
+
+    if (!response.ok) throw new Error(`GitHub release lookup failed (${response.status}).`);
+
+    const release = await response.json();
+    const latestVersion = release?.tag_name || release?.name;
+    const currentVersion = app.getVersion();
+
+    if (!latestVersion) {
+      if (showFeedback) {
+        await dialog.showMessageBox({
+          type: 'info',
+          title: 'LuxShift Updates',
+          message: 'Could not determine the latest version right now.'
+        });
+      }
+      return;
+    }
+
+    if (compareVersions(latestVersion, currentVersion) <= 0) {
+      if (showFeedback) {
+        await dialog.showMessageBox({
+          type: 'info',
+          title: 'LuxShift Updates',
+          message: `You're up to date (v${currentVersion}).`
+        });
+      }
+      return;
+    }
+
+    const result = await dialog.showMessageBox({
+      type: 'info',
+      title: 'Update available',
+      message: `A new version of LuxShift is available (${latestVersion}).`,
+      detail: 'Download the newest release to update LuxShift.',
+      buttons: ['Download Update', 'Later'],
+      defaultId: 0,
+      cancelId: 1
+    });
+
+    if (result.response === 0) {
+      await shell.openExternal(release?.html_url ?? `https://github.com/${GITHUB_REPO}/releases/latest`);
+    }
+  } catch (error) {
+    if (showFeedback) {
+      await dialog.showMessageBox({
+        type: 'error',
+        title: 'LuxShift Updates',
+        message: 'Could not check for updates.',
+        detail: error?.message || 'Please check your internet connection and try again.'
+      });
+    }
+  }
+}
+
+function parseVersionParts(version) {
+  return String(version || '0.0.0')
+    .replace(/^v/i, '')
+    .split('.')
+    .map((part) => Number.parseInt(part, 10) || 0);
+}
+
+function compareVersions(a, b) {
+  const aParts = parseVersionParts(a);
+  const bParts = parseVersionParts(b);
+  const length = Math.max(aParts.length, bParts.length);
+
+  for (let i = 0; i < length; i++) {
+    const diff = (aParts[i] || 0) - (bParts[i] || 0);
+    if (diff !== 0) return diff > 0 ? 1 : -1;
+  }
+
+  return 0;
+}
+
+function createTray() {
+  if (tray) return tray;
+
+  tray = new Tray(getTrayIcon());
+  tray.setIgnoreDoubleClickEvents(true);
+  tray.on('click', toggleMainWindow);
+  tray.on('right-click', () => {
+    updateTrayMenu();
+    tray.popUpContextMenu();
+  });
+
+  updateTrayMenu();
+  return tray;
+}
+
+function updateTrayMenu(state = null) {
+  if (!tray) return;
+
+  const current = state || getCurrentWindDownState();
+  const status =
+    current.minutesToBedtime === null
+      ? 'No bedtime set'
+      : current.minutesToBedtime <= 0
+        ? 'Bedtime reached'
+        : `${Math.round(current.minutesToBedtime)}m to bedtime`;
+
+  tray.setContextMenu(
+    Menu.buildFromTemplate([
+      { label: 'Open LuxShift', click: showMainWindow },
+      {
+        label: mainWindow && !mainWindow.isDestroyed() && mainWindow.isVisible() ? 'Hide Window' : 'Show Window',
+        click: toggleMainWindow
+      },
+      { type: 'separator' },
+      { label: `Mode: ${current.phase}`, enabled: false },
+      { label: `Status: ${status}`, enabled: false },
+      { label: `Bedtime: ${current.bedtimeLabel || 'Not set'}`, enabled: false },
+      { type: 'separator' },
+      { label: 'Check for Updates…', click: () => checkForUpdates(true) },
+      { type: 'separator' },
+      {
+        label: 'Quit LuxShift',
+        click: () => {
+          isQuitting = true;
+          app.quit();
+        }
+      }
+    ])
+  );
+
+  const title =
+    current.phase === 'winding-down'
+      ? 'LuxShift • Wind-down'
+      : current.phase === 'bedtime'
+        ? 'LuxShift • Bedtime'
+        : 'LuxShift';
+
+  tray.setToolTip(title);
+}
+
 app.whenReady().then(async () => {
   app.setName('LuxShift');
-  // Set stable bundle ID for macOS permissions (Calendar, Accessibility, etc.)
-  // This ensures the dev app is recognized as the same app across restarts
+
   if (process.platform === 'darwin') {
     app.setAppUserModelId('com.luxshiftofficial.luxshift');
   }
@@ -702,64 +825,65 @@ app.whenReady().then(async () => {
     defaults: DEFAULT_PREFERENCES
   });
 
-  // Initialize smart bulb manager
   smartBulbManager = new SmartBulbManager(preferencesStore);
 
-  // Archive any expired schedule first
   archiveExpiredActiveSchedule();
+  createWindow();
 
-  // Create window (needed before starting tick)
-  const win = createWindow();
-
-  // Ensure Night Shift is OFF at startup (safety)
   await applyNightShift(0);
 
-  // Initialize smart bulbs if enabled - set active controller from saved config
   if (smartBulbManager.enabled && smartBulbManager.activeControllerType) {
     await smartBulbManager.setProtocol(smartBulbManager.activeControllerType);
     await smartBulbManager.enable(true);
   }
 
-  // Start wind-down tick (includes sunlight notifications)
   startWindDownTick();
-
-  // Create tray UI
   createTray();
 
-  // Start keep-alive pinger for Render free tier
   keepAlivePinger = new KeepAlivePinger();
   keepAlivePinger.start();
 
-  // Background update check
   checkForUpdates(false).catch(() => {});
-
-  // Re-open window when dock icon clicked (macOS)
   app.on('activate', showMainWindow);
 });
 
-app.on('before-quit', async () => {
+app.on('before-quit', () => {
   isQuitting = true;
-  stopWindDownTick();
-  // Stop keep-alive pinger
-  if (keepAlivePinger) keepAlivePinger.stop();
-  // Restore smart bulbs to normal
-  if (smartBulbManager?.activeController) {
-    await smartBulbManager.activeController.restoreNormal();
+
+  // Clear the tick first so no more Night Shift calls happen
+  if (windDownTickInterval) {
+    clearInterval(windDownTickInterval);
+    windDownTickInterval = null;
   }
+
+  // Turn Night Shift off synchronously before the process exits
+  // We cannot use await here — Electron does not wait for async before-quit handlers
+  if (process.platform === 'darwin' && fs.existsSync(NIGHTSHIFT_BIN)) {
+    try {
+      // stdio: 'ignore' avoids EIO write errors during quit, when the app's
+      // own stdio pipes may already be torn down (e.g. launched from Finder).
+      // Without this, execFileSync's internal pipe writes can surface as an
+      // uncaught exception that bypasses this try/catch entirely.
+      require('child_process').execFileSync(NIGHTSHIFT_BIN, ['off'], {
+        timeout: 3000,
+        stdio: 'ignore'
+      });
+    } catch (_) {}
+  }
+
+  if (keepAlivePinger) keepAlivePinger.stop();
+  smartBulbManager?.shutdown?.();
 });
 
-app.on('window-all-closed', (event) => {
-  event.preventDefault(); // keep app alive in tray
+app.on('window-all-closed', () => {
+  // App stays alive in background (tray icon)
 });
 
-// ---- IPC handlers ----
-// Preferences
 ipcMain.handle('luxshift:get-preferences', async () => getPreferences());
 
 ipcMain.handle('luxshift:save-preferences', async (_event, payload) => {
   const next = buildSafePreferences(payload);
   preferencesStore.set(next);
-  // Force fresh wind-down broadcast so UI updates immediately
   return {
     ok: true,
     preferences: getPreferences(),
@@ -767,39 +891,36 @@ ipcMain.handle('luxshift:save-preferences', async (_event, payload) => {
   };
 });
 
-// Schedule store
 ipcMain.handle('luxshift:get-active-schedule', async () => getActiveSchedule());
 
 ipcMain.handle('luxshift:save-active-schedule', async (_event, payload) => {
-  const result = saveActiveSchedule(payload);
-  return result;
+  return saveActiveSchedule(payload);
 });
 
 ipcMain.handle('luxshift:clear-active-schedule', async () => {
-  const result = clearActiveSchedule();
-  return result;
+  return clearActiveSchedule();
 });
 
 ipcMain.handle('luxshift:archive-expired-schedule', async () => {
-  const result = archiveExpiredActiveSchedule();
-  return result;
+  return archiveExpiredActiveSchedule();
 });
 
-// Wind-down state
 ipcMain.handle('luxshift:get-winddown-state', async () => getCurrentWindDownState());
 
-// Location / environment & notifications
 ipcMain.handle('luxshift:search-location', async (_event, query) => {
   const search = String(query || '').trim();
   if (search.length < 2) {
     return { ok: false, error: 'Please enter at least 2 characters.' };
   }
+
   try {
     const url = `https://geocoding-api.open-meteo.com/v1/search?name=${encodeURIComponent(search)}&count=6&language=en&format=json`;
     const response = await fetch(url);
+
     if (!response.ok) {
       return { ok: false, error: `Location search failed (${response.status}).` };
     }
+
     const data = await response.json();
     const results = Array.isArray(data?.results)
       ? data.results.map((item) => ({
@@ -812,6 +933,7 @@ ipcMain.handle('luxshift:search-location', async (_event, query) => {
           timezone: item.timezone || null
         }))
       : [];
+
     return { ok: true, results };
   } catch (error) {
     return { ok: false, error: error?.message || 'Location search failed.' };
@@ -821,17 +943,22 @@ ipcMain.handle('luxshift:search-location', async (_event, query) => {
 ipcMain.handle('luxshift:get-environment', async (_event, coords) => {
   const latitude = Number(coords?.latitude);
   const longitude = Number(coords?.longitude);
+
   if (!Number.isFinite(latitude) || !Number.isFinite(longitude)) {
     return { ok: false, error: 'Valid latitude and longitude are required.' };
   }
+
   try {
     const url = `https://api.open-meteo.com/v1/forecast?latitude=${encodeURIComponent(latitude)}&longitude=${encodeURIComponent(longitude)}&current=temperature_2m,apparent_temperature,cloud_cover,precipitation,weather_code,is_day&timezone=auto&forecast_days=1`;
     const response = await fetch(url);
+
     if (!response.ok) {
       return { ok: false, error: `Environment lookup failed (${response.status}).` };
     }
+
     const data = await response.json();
     const current = data?.current || {};
+
     return {
       ok: true,
       weather: {
@@ -858,18 +985,19 @@ ipcMain.handle('luxshift:notify', async (_event, payload) => {
   if (!Notification.isSupported()) {
     return { ok: false, error: 'Notifications are not supported on this device.' };
   }
+
   try {
     new Notification({
       title: String(payload?.title || 'LuxShift').trim() || 'LuxShift',
       body: String(payload?.body || '').trim()
     }).show();
+
     return { ok: true };
   } catch (error) {
     return { ok: false, error: error?.message || 'Notification failed.' };
   }
 });
 
-// Update checks
 ipcMain.handle('luxshift:request-notifications', async () => {
   try {
     if (Notification.isSupported()) {
@@ -879,9 +1007,12 @@ ipcMain.handle('luxshift:request-notifications', async () => {
         silent: true
       });
       n.show();
-      setTimeout(() => { try { n.close(); } catch (_) {} }, 3000);
+      setTimeout(() => {
+        try { n.close(); } catch (_) {}
+      }, 3000);
       return { ok: true };
     }
+
     return { ok: false };
   } catch (err) {
     return { ok: false, error: err.message };
@@ -893,7 +1024,6 @@ ipcMain.handle('luxshift:check-for-updates', async () => {
   return { ok: true };
 });
 
-// Permission IPC
 ipcMain.handle('luxshift:check-permissions', async () => ({
   accessibility: hasAccessibilityPermission()
 }));
@@ -913,30 +1043,36 @@ ipcMain.handle('luxshift:open-accessibility-settings', async () => {
   return { ok: true };
 });
 
-// API Key IPC
 ipcMain.handle('luxshift:get-user-api-key', async () => getUserApiKey());
 
 ipcMain.handle('luxshift:save-user-api-key', async (_event, { key, provider }) => {
-  const result = saveUserApiKey(key, provider);
-  return result;
+  return saveUserApiKey(key, provider);
 });
 
 ipcMain.handle('luxshift:delete-user-api-key', async () => {
-  const result = deleteUserApiKey();
-  return result;
+  return deleteUserApiKey();
 });
 
 ipcMain.handle('luxshift:clear-all-user-data', async () => {
-  const result = clearAllUserData();
-  return result;
+  return clearAllUserData();
 });
 
-// ---- Calendar Integration IPC ----
-
-// Google Calendar — single-click interactive OAuth (opens system browser,
-// catches redirect on a local loopback server, stores tokens for reuse)
 ipcMain.handle('luxshift:calendar:google:connect-interactive', async () => {
   try {
+    // If we already have valid tokens, skip OAuth and just return calendars
+    const existingTokens = preferencesStore.get('googleCalendarTokens');
+    if (existingTokens) {
+      try {
+        const client = new GoogleCalendarClient();
+        await client.initialize(existingTokens);
+        const calendars = await client.listCalendars();
+        return { ok: true, calendars, reused: true };
+      } catch (_) {
+        // Tokens expired or invalid — fall through to fresh OAuth
+        preferencesStore.set('googleCalendarTokens', null);
+      }
+    }
+    // Fresh OAuth flow
     const client = new GoogleCalendarClient();
     const tokens = await client.connectInteractive((url) => shell.openExternal(url));
     preferencesStore.set('googleCalendarTokens', tokens);
@@ -951,6 +1087,7 @@ ipcMain.handle('luxshift:calendar:google:list-calendars', async () => {
   try {
     const tokens = preferencesStore.get('googleCalendarTokens');
     if (!tokens) return { ok: false, error: 'Not connected. Click Connect first.' };
+
     const client = new GoogleCalendarClient();
     await client.initialize(tokens);
     const calendars = await client.listCalendars();
@@ -964,6 +1101,7 @@ ipcMain.handle('luxshift:calendar:google:fetch-events', async (_event, { calenda
   try {
     const tokens = preferencesStore.get('googleCalendarTokens');
     if (!tokens) return { ok: false, error: 'Not connected. Click Connect first.' };
+
     const client = new GoogleCalendarClient();
     await client.initialize(tokens);
     const events = await client.getEvents(calendarIds, new Date(startDate), new Date(endDate));
@@ -982,7 +1120,6 @@ ipcMain.handle('luxshift:calendar:google:disconnect', async () => {
   return { ok: true };
 });
 
-// Apple Calendar
 ipcMain.handle('luxshift:calendar:apple:check-access', async () => {
   const client = new AppleCalendarClient();
   const hasAccess = await client.checkAccess();
@@ -996,12 +1133,15 @@ ipcMain.handle('luxshift:calendar:apple:list-calendars', async () => {
 });
 
 ipcMain.handle('luxshift:calendar:apple:fetch-events', async (_event, { calendarNames, startDate, endDate }) => {
-  const client = new AppleCalendarClient();
-  const events = await client.getEvents(calendarNames, new Date(startDate), new Date(endDate));
-  return { ok: true, events };
+  try {
+    const client = new AppleCalendarClient();
+    const events = await client.getEvents(calendarNames, new Date(startDate), new Date(endDate));
+    return { ok: true, events };
+  } catch (error) {
+    return { ok: false, error: error.message };
+  }
 });
 
-// Notion
 ipcMain.handle('luxshift:calendar:notion:connect', async (_event, { token, databaseId }) => {
   try {
     const client = new NotionCalendarClient();
@@ -1024,7 +1164,6 @@ ipcMain.handle('luxshift:calendar:notion:fetch-events', async (_event, { token, 
   }
 });
 
-// ICS file import
 ipcMain.handle('luxshift:calendar:ics:parse', async (_event, { content, startDate, endDate }) => {
   try {
     const events = parseICS(content, startDate ? new Date(startDate) : null, endDate ? new Date(endDate) : null);
@@ -1034,8 +1173,6 @@ ipcMain.handle('luxshift:calendar:ics:parse', async (_event, { content, startDat
   }
 });
 
-// ---- Smart Bulb Integration IPC ----
-
 ipcMain.handle('luxshift:smartbulb:get-protocols', async () => {
   if (!smartBulbManager) return { ok: false, error: 'Smart bulb manager not initialized' };
   return { ok: true, protocols: smartBulbManager.getAvailableProtocols() };
@@ -1043,15 +1180,16 @@ ipcMain.handle('luxshift:smartbulb:get-protocols', async () => {
 
 ipcMain.handle('luxshift:smartbulb:discover', async (_event, { protocol }) => {
   if (!smartBulbManager) return { ok: false, error: 'Smart bulb manager not initialized' };
+
   try {
     if (protocol) {
       const controller = smartBulbManager.controllers[protocol];
       if (!controller) return { ok: false, error: `Unknown protocol: ${protocol}` };
       const bulbs = await controller.discover();
-      smartBulbManager._mergeBulbs();
+      if (smartBulbManager.activeControllerType === protocol) smartBulbManager._mergeBulbs();
       return { ok: true, bulbs };
     }
-    // Discover all
+
     const results = await smartBulbManager.discoverAll();
     smartBulbManager._mergeBulbs();
     return { ok: true, results };
@@ -1100,137 +1238,3 @@ ipcMain.handle('luxshift:smartbulb:get-status', async () => {
     totalBulbs: smartBulbManager.getBulbs().length
   };
 });
-
-// ---- Update check helper ----
-async function checkForUpdates(showFeedback = false) {
-  try {
-    const response = await fetch(
-      `https://api.github.com/repos/${GITHUB_REPO}/releases/latest`,
-      { headers: { Accept: 'application/vnd.github+json' } }
-    );
-    if (!response.ok) throw new Error(`GitHub release lookup failed (${response.status}).`);
-    const release = await response.json();
-    const latestVersion = release?.tag_name || release?.name;
-    const currentVersion = app.getVersion();
-
-    if (!latestVersion) {
-      if (showFeedback) {
-        await dialog.showMessageBox({
-          type: 'info',
-          title: 'LuxShift Updates',
-          message: 'Could not determine the latest version right now.'
-        });
-      }
-      return;
-    }
-    if (compareVersions(latestVersion, currentVersion) <= 0) {
-      if (showFeedback) {
-        await dialog.showMessageBox({
-          type: 'info',
-          title: 'LuxShift Updates',
-          message: `You're up to date (v${currentVersion}).`
-        });
-      }
-      return;
-    }
-    const result = await dialog.showMessageBox({
-      type: 'info',
-      title: 'Update available',
-      message: `A new version of LuxShift is available (${latestVersion}).`,
-      detail: 'Download the newest release to update LuxShift.',
-      buttons: ['Download Update', 'Later'],
-      defaultId: 0,
-      cancelId: 1
-    });
-    if (result.response === 0) {
-      await shell.openExternal(release?.html_url ?? `https://github.com/${GITHUB_REPO}/releases/latest`);
-    }
-  } catch (error) {
-    if (showFeedback) {
-      await dialog.showMessageBox({
-        type: 'error',
-        title: 'LuxShift Updates',
-        message: 'Could not check for updates.',
-        detail: error?.message || 'Please check your internet connection and try again.'
-      });
-    }
-  }
-}
-
-// ---- Version comparison helper ----
-function parseVersionParts(version) {
-  return String(version || '0.0.0')
-    .replace(/^v/i, '')
-    .split('.')
-    .map((part) => Number.parseInt(part, 10) || 0);
-}
-
-function compareVersions(a, b) {
-  const aParts = parseVersionParts(a);
-  const bParts = parseVersionParts(b);
-  const length = Math.max(aParts.length, bParts.length);
-  for (let i = 0; i < length; i++) {
-    const diff = (aParts[i] || 0) - (bParts[i] || 0);
-    if (diff !== 0) return diff > 0 ? 1 : -1;
-  }
-  return 0;
-}
-
-// ---- Tray creation ----
-function createTray() {
-  if (tray) return tray;
-  tray = new Tray(getTrayIcon());
-  tray.setIgnoreDoubleClickEvents(true);
-  tray.on('click', toggleMainWindow);
-  tray.on('right-click', () => {
-    updateTrayMenu();
-    tray.popUpContextMenu();
-  });
-  updateTrayMenu();
-  return tray;
-}
-
-function updateTrayMenu(state = null) {
-  if (!tray) return;
-  const current = state || getCurrentWindDownState();
-  const status =
-    current.minutesToBedtime === null
-      ? 'No bedtime set'
-      : current.minutesToBedtime <= 0
-        ? 'Bedtime reached'
-        : `${Math.round(current.minutesToBedtime)}m to bedtime`;
-
-  tray.setContextMenu(
-    Menu.buildFromTemplate([
-      { label: 'Open LuxShift', click: showMainWindow },
-      {
-        label: mainWindow && !mainWindow.isDestroyed() && mainWindow.isVisible()
-          ? 'Hide Window'
-          : 'Show Window',
-        click: toggleMainWindow
-      },
-      { type: 'separator' },
-      { label: `Mode: ${current.phase}`, enabled: false },
-      { label: `Status: ${status}`, enabled: false },
-      { label: `Bedtime: ${current.bedtimeLabel || 'Not set'}`, enabled: false },
-      { type: 'separator' },
-      { label: 'Check for Updates…', click: () => checkForUpdates(true) },
-      { type: 'separator' },
-      {
-        label: 'Quit LuxShift',
-        click: () => {
-          isQuitting = true;
-          app.quit();
-        }
-      }
-    ])
-  );
-
-  const title =
-    current.phase === 'winding-down'
-      ? 'LuxShift • Wind‑down'
-      : current.phase === 'bedtime'
-        ? 'LuxShift • Bedtime'
-        : 'LuxShift';
-  tray.setToolTip(title);
-}
