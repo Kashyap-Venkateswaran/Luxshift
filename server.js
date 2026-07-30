@@ -1,7 +1,8 @@
 const express = require('express');
 const cors = require('cors');
 const rateLimit = require('express-rate-limit');
-const fetch = require('node-fetch');
+// Node 18+ (Render is running Node 24) has fetch built in globally —
+// no need for node-fetch, which is ESM-only in v3+ and breaks under require().
 
 // Custom error class for structured error handling
 class ErrorWithCode extends Error {
