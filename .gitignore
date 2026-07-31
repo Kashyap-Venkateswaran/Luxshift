@@ -1,14 +1,40 @@
+cat > .gitignore << 'EOF'
+# Secrets — never commit
+credentials.json
+.env
+.env.*
+*.pem
+*.key
+
+# Dependencies
 node_modules/
-.DS_Store
+
+# Build output
 dist/
-out/
+releases/
+build/*.tmp
+
+# Local logs
 *.log
+server.log
+npm-debug.log*
+
+# OS junk
+.DS_Store
+Thumbs.db
+
+# Editor
+.vscode/
+.idea/
+
+# Claude Code / AI assistant working folders — not app source
+.claude/
+.agent-work/
+.chat-summaries-full/
+imagesforclaudecode/
+.imagesforclaudecode/
+
+# Misc
 nvidia_env.rtf
 *.env.rtf
-.env
-credentials.json
-.claude/
-.chat-summaries-full/
-.agent-work/
-imagesforclaudecode/
-
+EOF
