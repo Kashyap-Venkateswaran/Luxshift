@@ -54,10 +54,12 @@
     "mac": {
       "category": "public.app-category.healthcare-fitness",
       "minimumSystemVersion": "10.15.0",
+      "icon": "build/icon.icns",
       "target": [
         "dmg",
         "zip"
       ],
+      "x64ArchFiles": "Contents/Resources/app.asar.unpacked/**/*.{node,dylib}",
       "extendInfo": {
         "NSLocationWhenInUseUsageDescription": "LuxShift uses your location to calculate accurate sunrise, sunset, and golden-hour times for sunlight exposure reminders, and to fetch local weather for those suggestions."
       }

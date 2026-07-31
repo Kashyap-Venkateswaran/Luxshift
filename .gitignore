@@ -10,5 +10,5 @@ credentials.json
 .claude/
 .chat-summaries-full/
 .agent-work/
-.imagesforclaudecode/
+imagesforclaudecode/
 
