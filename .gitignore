@@ -7,3 +7,8 @@ nvidia_env.rtf
 *.env.rtf
 .env
 credentials.json
+.claude/
+.chat-summaries-full/
+.agent-work/
+.imagesforclaudecode/
+

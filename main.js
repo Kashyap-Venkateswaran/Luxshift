@@ -25,14 +25,6 @@ const SunCalc = require('suncalc');
 
 const execFileAsync = promisify(execFile);
 
-// Safety net: a synchronous child_process call during app quit (or any other
-// late-stage teardown) can occasionally throw in a way that bypasses local
-// try/catch (e.g. an EIO write error surfacing as a process-level exception).
-// Log it instead of letting it hard-crash the app.
-process.on('uncaughtException', (error) => {
-  console.error('[Main] Uncaught exception:', error);
-});
-
 const {
   getActiveSchedule,
   saveActiveSchedule,
@@ -529,8 +521,6 @@ function sendSunlightNotification(payload) {
 }
 
 async function checkSunlightNotifications(prefs, schedule) {
-  if (!mainWindow || mainWindow.isDestroyed()) return;
-
   const now = new Date();
   const todayKey = `${now.getFullYear()}-${now.getMonth()}-${now.getDate()}`;
   const nowMinutes = now.getHours() * 60 + now.getMinutes();
@@ -623,11 +613,17 @@ async function applyDisplayAdaptation(intensity) {
     return;
   }
 
-  const strength = parseFloat((0.05 + intensity * 0.67).toFixed(3));
+  // Ramp Night Shift color temperature from a barely-there floor up to FULL
+  // strength (1.0) by the time intensity hits 1.0 (bedtime) — previously this
+  // capped out around 0.72, so the screen never got as warm as macOS allows
+  // even at the peak of the wind-down window.
+  const strength = parseFloat((0.05 + intensity * 0.95).toFixed(3));
   await applyNightShift(strength);
 
-  const brightnessIntensity = Math.max(0, (intensity - 0.5) * 2);
-  const targetBrightness = 1.0 - (brightnessIntensity * (1.0 - MIN_BRIGHTNESS));
+  // Start dimming brightness from the beginning of the wind-down window
+  // instead of waiting until intensity > 0.5 — previously the first half of
+  // every wind-down period had zero brightness change at all.
+  const targetBrightness = 1.0 - (intensity * (1.0 - MIN_BRIGHTNESS));
   await setBrightness(targetBrightness);
 }
 
@@ -860,14 +856,7 @@ app.on('before-quit', () => {
   // We cannot use await here — Electron does not wait for async before-quit handlers
   if (process.platform === 'darwin' && fs.existsSync(NIGHTSHIFT_BIN)) {
     try {
-      // stdio: 'ignore' avoids EIO write errors during quit, when the app's
-      // own stdio pipes may already be torn down (e.g. launched from Finder).
-      // Without this, execFileSync's internal pipe writes can surface as an
-      // uncaught exception that bypasses this try/catch entirely.
-      require('child_process').execFileSync(NIGHTSHIFT_BIN, ['off'], {
-        timeout: 3000,
-        stdio: 'ignore'
-      });
+      require('child_process').execFileSync(NIGHTSHIFT_BIN, ['off'], { timeout: 3000 });
     } catch (_) {}
   }
 

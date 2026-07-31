@@ -44,8 +44,10 @@ class BulbController {
 
   static intensityToBrightness(intensity) {
     const clamped = Math.max(0, Math.min(1, Number(intensity) || 0));
-    const brightnessIntensity = Math.max(0, (clamped - 0.5) * 2);
-    return 1.0 - (brightnessIntensity * 0.7);
+    // Dim across the full wind-down window, not just the back half — previously
+    // (clamped - 0.5) * 2 meant zero brightness change until 50% through the
+    // window, same bug that existed in the main-display dimming logic.
+    return 1.0 - (clamped * 0.7);
   }
 
   async applyWindDownState(intensity, transitionMs = 2000) {

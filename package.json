@@ -57,7 +57,10 @@
       "target": [
         "dmg",
         "zip"
-      ]
+      ],
+      "extendInfo": {
+        "NSLocationWhenInUseUsageDescription": "LuxShift uses your location to calculate accurate sunrise, sunset, and golden-hour times for sunlight exposure reminders, and to fetch local weather for those suggestions."
+      }
     },
     "extraResources": [
       {
