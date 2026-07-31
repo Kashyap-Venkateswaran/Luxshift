@@ -1,9 +1,0 @@
-{
-  "model": "opus",
-  "effortLevel": "xhigh",
-  "theme": "dark",
-  "statusLine": {
-    "type": "command",
-    "command": "/Users/luxshift/.claude/statusline-command.sh"
-  }
-}
